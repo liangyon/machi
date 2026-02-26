@@ -9,7 +9,7 @@ from app.core.config import settings
 from app.db.session import Base
 
 # Import all models here so Alembic can detect them for autogenerate
-# from app.models import ...  # noqa: F401
+from app.models.user import User  # noqa: F401
 
 config = context.config
 

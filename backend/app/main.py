@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.api.router import api_router
 from app.core.config import settings
@@ -29,6 +30,9 @@ def create_app() -> FastAPI:
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
     )
+
+    # ── Session (needed by Authlib for OAuth state) ──
+    app.add_middleware(SessionMiddleware, secret_key=settings.SECRET_KEY)
 
     # ── CORS ─────────────────────────────────────────
     app.add_middleware(

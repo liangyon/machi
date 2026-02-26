@@ -20,8 +20,21 @@ class Settings(BaseSettings):
     # ── CORS ─────────────────────────────────────────────
     CORS_ORIGINS: list[str] = ["http://localhost:3000"]
 
-    # ── Auth (placeholder) ───────────────────────────────
+    # ── Auth ─────────────────────────────────────────────
     SECRET_KEY: str = "change-me-in-production"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
+
+    # ── OAuth — Google ───────────────────────────────────
+    GOOGLE_CLIENT_ID: str = ""
+    GOOGLE_CLIENT_SECRET: str = ""
+
+    # ── OAuth — Discord ──────────────────────────────────
+    DISCORD_CLIENT_ID: str = ""
+    DISCORD_CLIENT_SECRET: str = ""
+
+    # ── Frontend ─────────────────────────────────────────
+    FRONTEND_URL: str = "http://localhost:3000"
 
     # ── OpenAI (placeholder) ─────────────────────────────
     OPENAI_API_KEY: str = ""
