@@ -24,6 +24,7 @@ export async function fetchAPI<T = unknown>(
   const url = `${API_BASE}${path}`;
 
   const res = await fetch(url, {
+    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       ...init?.headers,
