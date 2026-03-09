@@ -16,6 +16,7 @@ dependencies = [
     "openai>=2.24.0",
     "pydantic-settings>=2.13.1",
     "pyjwt>=2.8.0",
+    "pytest>=9.0.2",
     "python-dotenv>=1.2.1",
     "sqlalchemy>=2.0.47",
     "uvicorn[standard]>=0.41.0",
@@ -24,6 +25,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "pytest-asyncio>=0.23",
     "httpx>=0.28.1",
 ]
 

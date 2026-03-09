@@ -10,6 +10,7 @@ from app.db.session import Base
 
 # Import all models here so Alembic can detect them for autogenerate
 from app.models.user import User  # noqa: F401
+from app.models.anime import AnimeList, AnimeEntry, UserPreferenceProfile  # noqa: F401
 
 config = context.config
 

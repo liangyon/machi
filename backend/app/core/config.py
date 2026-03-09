@@ -36,6 +36,9 @@ class Settings(BaseSettings):
     # ── Frontend ─────────────────────────────────────────
     FRONTEND_URL: str = "http://localhost:3000"
 
+    # ── MAL API ──────────────────────────────────────────
+    MAL_CLIENT_ID: str = ""
+
     # ── OpenAI (placeholder) ─────────────────────────────
     OPENAI_API_KEY: str = ""
 
