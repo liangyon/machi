@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: str = ""
     OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
 
+    # ── OpenAI Chat (LLM for recommendations) ───────────
+    # gpt-4.1-nano: cheapest/fastest, good for simple tasks
+    # gpt-4.1-mini: best value (smart + cheap) — our default
+    # gpt-4.1: most capable, higher cost
+    OPENAI_CHAT_MODEL: str = "gpt-4.1-mini"
+    # Temperature: 0.0 = deterministic, 1.0 = creative.
+    # 0.7 is a good balance — varied enough to not repeat itself,
+    # but focused enough to stay on-topic and give coherent reasoning.
+    OPENAI_CHAT_TEMPERATURE: float = 0.7
+    # Max tokens for the LLM response.  A single recommendation with
+    # reasoning is ~150 tokens, so 10 recs ≈ 1500.  2000 gives headroom.
+    OPENAI_CHAT_MAX_TOKENS: int = 2000
+
     # ── Vector Store (ChromaDB) ──────────────────────────
     # Where ChromaDB persists its data on disk.
     # In production this would be replaced by pgvector.

@@ -448,6 +448,7 @@ def upsert_catalog_entries(
                 is_embedded=False,
             )
             db.add(new_entry)
+            db.flush()  # Flush so subsequent SELECTs see this row (prevents UNIQUE violation on duplicates within the same batch)
             stats["inserted"] += 1
 
     db.commit()
