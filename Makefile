@@ -1,4 +1,4 @@
-.PHONY: dev backend frontend migrate migration test
+.PHONY: dev backend frontend migrate migration test ingest-anime ingest-anime-small catalog-stats embed
 
 # ── Development ──────────────────────────────────────
 
@@ -24,6 +24,25 @@ migrate:
 ## Create a new migration (usage: make migration msg="add users table")
 migration:
 	cd backend && uv run alembic revision --autogenerate -m "$(msg)"
+
+# ── Anime Knowledge Base ─────────────────────────────
+
+## Ingest anime catalog from Jikan API + embed into vector store
+## Fetches top 250 anime + 4 recent seasons (~500-700 unique anime)
+ingest-anime:
+	cd backend && uv run python -m app.cli ingest-anime --pages 10 --seasons 4
+
+## Quick test ingestion (2 pages = 50 anime, no embedding)
+ingest-anime-small:
+	cd backend && uv run python -m app.cli ingest-anime --pages 2 --seasons 0 --skip-embed
+
+## Show catalog and vector store statistics
+catalog-stats:
+	cd backend && uv run python -m app.cli stats
+
+## Embed un-embedded catalog entries into vector store
+embed:
+	cd backend && uv run python -m app.cli embed
 
 # ── Testing ──────────────────────────────────────────
 

@@ -1,4 +1,5 @@
-"""Anime-related ORM models for MAL list ingestion and preference tracking.
+"""Anime-related ORM models for MAL list ingestion, preference tracking,
+and the anime knowledge base (catalog).
 
 Design notes
 ────────────
@@ -6,10 +7,21 @@ Design notes
   One user → one AnimeList (for now).  We keep it separate from User so
   the auth layer stays clean and we can support other list sources later.
 
-• AnimeEntry stores each anime on the user's list together with the
-  anime's metadata (genres, synopsis …).  In Phase 2 we'll normalise
-  anime metadata into its own table; for now co-locating it keeps
-  queries simple and avoids premature abstraction.
+• AnimeEntry stores each anime on a *user's* list together with a
+  snapshot of the anime's metadata.  It represents the user↔anime
+  relationship (score, watch status, episodes watched).
+
+• AnimeCatalogEntry (Phase 2) is the *canonical* anime knowledge base.
+  One row per anime, independent of any user.  This is what the vector
+  store indexes for RAG retrieval.  It holds the richest metadata we
+  can get (synopsis, genres, themes, studios, etc.) and the pre-built
+  ``embedding_text`` that gets embedded into the vector store.
+
+  Why separate from AnimeEntry?
+  - Multiple users may have the same anime → no duplicate metadata
+  - The vector store needs a single source of truth per anime
+  - We can enrich catalog entries independently (e.g. add themes)
+  - Decouples "what anime exist" from "what a user watched"
 
 • UserPreferenceProfile holds the *computed* taste summary as a JSON
   blob.  JSON is intentional — the profile schema will evolve as we
@@ -229,4 +241,128 @@ class UserPreferenceProfile(Base):
         return (
             f"<UserPreferenceProfile user_id={self.user_id!r} "
             f"anime_count={self.anime_count}>"
+        )
+
+
+# ═════════════════════════════════════════════════════════
+# Phase 2 — Anime Knowledge Base
+# ═════════════════════════════════════════════════════════
+
+
+class AnimeCatalogEntry(Base):
+    """Canonical anime metadata — one row per anime, independent of users.
+
+    This is the knowledge base that the vector store indexes for RAG
+    retrieval.  Each row represents a single anime title with the
+    richest metadata we can gather.
+
+    Key design decisions:
+
+    1. **mal_id is unique** — This is our deduplication key.  When we
+       ingest from multiple sources (top anime, seasonal, by genre),
+       the same anime may appear multiple times.  We upsert by mal_id.
+
+    2. **embedding_text** — A pre-built rich text document that gets
+       embedded into the vector store.  We store it here so we can
+       regenerate embeddings without re-fetching from the API.
+       Format example::
+
+           Title: Cowboy Bebop
+           English Title: Cowboy Bebop
+           Type: TV | 26 episodes | 1998
+           Genres: Action, Sci-Fi
+           Themes: Space, Adult Cast
+           Studios: Sunrise
+           Score: 8.75 (1,500,000 members)
+           Synopsis: In the year 2071, humanity has colonized...
+
+    3. **is_embedded** — Tracks whether this entry has been embedded
+       into the vector store.  Lets us do incremental embedding
+       (only embed new/changed entries).
+
+    4. **source** — Where we got this entry from (e.g. "top_anime",
+       "seasonal_2024_winter", "genre_action").  Useful for debugging
+       and understanding catalog coverage.
+    """
+
+    __tablename__ = "anime_catalog"
+
+    id: Mapped[str] = mapped_column(
+        String(36),
+        primary_key=True,
+        default=lambda: str(uuid.uuid4()),
+    )
+
+    # ── MAL identity (deduplication key) ─────────────────
+    mal_id: Mapped[int] = mapped_column(Integer, unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(512))
+    title_english: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    image_url: Mapped[str | None] = mapped_column(String(2048), nullable=True)
+
+    # ── Anime metadata ───────────────────────────────────
+    anime_type: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )  # TV | Movie | OVA | ONA | Special | Music
+    anime_status: Mapped[str | None] = mapped_column(
+        String(30), nullable=True
+    )  # Finished Airing | Currently Airing | Not yet aired
+    total_episodes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    synopsis: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # ── Classification ───────────────────────────────────
+    genres: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # comma-separated: "Action, Adventure, Fantasy"
+    themes: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # comma-separated: "Isekai, Military"
+    demographics: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # comma-separated: "Shounen, Seinen"
+    studios: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # comma-separated studio names
+
+    # ── Temporal ─────────────────────────────────────────
+    season: Mapped[str | None] = mapped_column(
+        String(20), nullable=True
+    )  # spring | summer | fall | winter
+    year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # ── Community metrics ────────────────────────────────
+    mal_score: Mapped[float | None] = mapped_column(Float, nullable=True)
+    mal_members: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mal_rank: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    mal_popularity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    # ── Related anime (for graph-based recommendations) ──
+    related_anime_ids: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # comma-separated MAL IDs: "1,5,6"
+
+    # ── Vector store integration ─────────────────────────
+    embedding_text: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )  # pre-built rich text for embedding
+    is_embedded: Mapped[bool] = mapped_column(
+        default=False, index=True
+    )  # has this been embedded into the vector store?
+
+    # ── Ingestion metadata ───────────────────────────────
+    source: Mapped[str | None] = mapped_column(
+        String(100), nullable=True
+    )  # e.g. "top_anime", "seasonal_2024_winter", "genre_action"
+
+    # ── Timestamps ───────────────────────────────────────
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    def __repr__(self) -> str:
+        return (
+            f"<AnimeCatalogEntry mal_id={self.mal_id} title={self.title!r} "
+            f"embedded={self.is_embedded}>"
         )

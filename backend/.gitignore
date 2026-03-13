@@ -24,6 +24,9 @@ venv/
 *.db
 *.sqlite3
 
+# Vector Store (ChromaDB)
+chroma_data/
+
 # Distribution
 dist/
 build/

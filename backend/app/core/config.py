@@ -39,8 +39,15 @@ class Settings(BaseSettings):
     # ── MAL API ──────────────────────────────────────────
     MAL_CLIENT_ID: str = ""
 
-    # ── OpenAI (placeholder) ─────────────────────────────
+    # ── OpenAI ───────────────────────────────────────────
     OPENAI_API_KEY: str = ""
+    OPENAI_EMBEDDING_MODEL: str = "text-embedding-3-small"
+
+    # ── Vector Store (ChromaDB) ──────────────────────────
+    # Where ChromaDB persists its data on disk.
+    # In production this would be replaced by pgvector.
+    CHROMA_PERSIST_DIR: str = "./chroma_data"
+    CHROMA_COLLECTION_NAME: str = "anime_catalog"
 
 
 settings = Settings()
