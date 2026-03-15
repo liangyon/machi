@@ -133,6 +133,55 @@ Solve the problem of vague and ambiguous recommendations on current streaming pl
 
 ---
 
+## Phase 3.5: Recommendation Persistence & Feedback Loop
+
+**Goal**: Persist recommendations and use feedback to improve future suggestions.
+
+### Current State (Phase 3)
+- Recommendations are cached in-memory only (lost on server restart)
+- Feedback (👍/👎/✅) is collected via API but stored in-memory and not used
+- No history of past recommendation sessions
+
+### Backend
+
+1. **New Database Models** (`app/models/recommendation.py`)
+   - `RecommendationSession` — stores a generation event (user_id, generated_at, custom_query, used_fallback)
+   - `RecommendationEntry` — individual recommendations within a session (mal_id, title, reasoning, confidence, similar_to, scores)
+   - `RecommendationFeedback` — user feedback on recommendations (mal_id, feedback_type: liked/disliked/watched, created_at)
+
+2. **Database Migration** — new tables for recommendation history and feedback
+
+3. **Persist Recommendations** (`app/api/recommendations.py`)
+   - `POST /generate` saves the session + entries to DB (replaces in-memory cache)
+   - `GET /` reads from DB instead of memory (survives restarts)
+   - `GET /history` — list past recommendation sessions with timestamps
+
+4. **Feedback-Driven Preference Tuning** (`app/services/preference_analyzer.py`)
+   - "liked" feedback → boost affinity for that anime's genres/themes (+0.05 per like)
+   - "disliked" feedback → reduce affinity for those genres/themes (-0.03 per dislike)
+   - "watched" feedback → add to exclusion set for future recommendations
+   - Store adjustments as a `feedback_adjustments` JSON field on `UserPreferenceProfile`
+   - Apply adjustments during `rerank_by_preferences()` in the RAG retriever
+
+5. **Feedback-Aware Retriever** (`app/services/rag.py`)
+   - Exclude previously "disliked" mal_ids from candidates
+   - Boost candidates similar to "liked" anime (higher preference_score)
+   - Exclude "watched" feedback mal_ids alongside the MAL watch list
+
+### Frontend
+
+6. **Recommendation History** — sidebar or tab showing past sessions ("Generated 3 hours ago", "Generated yesterday")
+7. **Feedback Indicators** — show which recommendations the user already rated
+8. **"Regenerate with feedback"** button — explicitly uses accumulated feedback
+
+### Why This Matters
+Without feedback persistence, every "Generate" call starts from scratch.
+With it, the system learns: "You liked dark thrillers and disliked romance comedies"
+→ future recommendations lean harder into thrillers and away from romcoms.
+This is the difference between a static tool and a learning recommendation engine.
+
+---
+
 ## Phase 4: Polish, Testing & Production Hardening
 
 **Goal**: Make it production-ready.

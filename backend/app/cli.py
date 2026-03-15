@@ -9,12 +9,16 @@ long-running or infrastructure-level for API endpoints:
 Usage:
     # From the backend directory:
     uv run python -m app.cli ingest-anime --pages 10
+    uv run python -m app.cli ingest-anime --all              # Fetch ENTIRE MAL catalog (~27k anime)
+    uv run python -m app.cli ingest-anime --all --skip-embed # Fetch all, embed later
     uv run python -m app.cli ingest-anime --pages 2 --skip-embed  # DB only, no vectors
-    uv run python -m app.cli stats  # Show catalog and vector store stats
+    uv run python -m app.cli embed                           # Embed un-embedded entries
+    uv run python -m app.cli stats                           # Show catalog stats
 
     # Or via Makefile:
-    make ingest-anime
-    make ingest-anime-small  # Quick test with 2 pages
+    make ingest-anime           # Default: 250 top + 4 seasons
+    make ingest-anime-all       # Full catalog (~27k anime, one-time)
+    make ingest-anime-small     # Quick test with 50 anime
 
 Why a CLI script instead of an API endpoint?
 ────────────────────────────────────────────
@@ -65,6 +69,17 @@ def main():
         "--embed-only",
         action="store_true",
         help="Only embed existing DB entries into vector store (no API fetching)",
+    )
+    ingest_parser.add_argument(
+        "--all",
+        action="store_true",
+        help=(
+            "Fetch the ENTIRE MAL anime catalog (~27,000 anime). "
+            "Crawls all pages of /top/anime until exhausted. "
+            "One-time operation: takes ~10-15 min for fetching, "
+            "plus ~5 min for embedding (~$0.50-1.00 OpenAI cost). "
+            "Overrides --pages and --seasons."
+        ),
     )
 
     # ── stats command ────────────────────────────────────
@@ -124,20 +139,44 @@ async def cmd_ingest_anime(args):
         _embed_unembedded_entries()
         return
 
+    # ── Handle --all mode ────────────────────────────────
+    # --all overrides --pages and --seasons.  It crawls the entire
+    # /top/anime endpoint until Jikan returns no more results.
+    # Jikan's /top/anime is sorted by score and includes EVERY
+    # anime on MAL (~27,000+), so we don't need seasonal fetching.
+    if getattr(args, "all", False):
+        pages = 1200  # ~30,000 / 25 per page — more than enough
+        seasons = 0   # not needed, top anime covers everything
+        print("\n🌐 FULL CATALOG MODE — fetching ALL anime from MAL")
+        print("   This is a one-time operation. Expect ~10-15 minutes.\n")
+    else:
+        pages = args.pages
+        seasons = args.seasons
+
     # ── Step 1: Fetch top anime ──────────────────────────
-    print(f"\n🔍 Fetching top anime ({args.pages} pages × 25 = up to {args.pages * 25} anime)...")
+    if getattr(args, "all", False):
+        print(f"🔍 Fetching ALL anime (crawling /top/anime until exhausted)...")
+    else:
+        print(f"🔍 Fetching top anime ({pages} pages × 25 = up to {pages * 25} anime)...")
 
     def on_page(page, total):
-        print(f"   Page {page}/{args.pages} — {total} anime so far")
+        if getattr(args, "all", False):
+            # For --all mode, show progress every 10 pages to reduce noise
+            if page % 10 == 0 or page <= 3:
+                elapsed_so_far = time.time() - start_time
+                rate = total / elapsed_so_far if elapsed_so_far > 0 else 0
+                print(f"   Page {page} — {total} anime fetched ({rate:.0f} anime/s)")
+        else:
+            print(f"   Page {page}/{pages} — {total} anime so far")
 
-    raw_top = await fetch_top_anime(pages=args.pages, on_page=on_page)
+    raw_top = await fetch_top_anime(pages=pages, on_page=on_page)
     print(f"   ✅ Got {len(raw_top)} top anime\n")
 
     # ── Step 2: Fetch recent seasons ─────────────────────
     raw_seasonal: list[dict] = []
-    if args.seasons > 0:
-        print(f"🗓️  Fetching {args.seasons} recent seasons...")
-        seasons_list = _get_recent_seasons(args.seasons)
+    if seasons > 0:
+        print(f"🗓️  Fetching {seasons} recent seasons...")
+        seasons_list = _get_recent_seasons(seasons)
 
         for year, season in seasons_list:
             print(f"   Fetching {season.capitalize()} {year}...")
@@ -161,17 +200,36 @@ async def cmd_ingest_anime(args):
 
     # Parse seasonal anime
     for raw in raw_seasonal:
-        parsed = parse_jikan_to_catalog(raw, source=f"seasonal")
+        parsed = parse_jikan_to_catalog(raw, source="seasonal")
         if parsed.get("mal_id"):
             all_parsed.append(parsed)
 
     print(f"   ✅ Parsed {len(all_parsed)} anime entries\n")
 
     # ── Step 4: Upsert into database ─────────────────────
+    # For large batches, upsert in chunks to avoid holding a huge
+    # transaction and to show progress.
     print("💾 Saving to database (upserting by MAL ID)...")
     db = SessionLocal()
     try:
-        stats = upsert_catalog_entries(db, all_parsed)
+        if len(all_parsed) > 1000:
+            # Chunk large batches for progress reporting
+            stats = {"inserted": 0, "updated": 0, "skipped": 0}
+            chunk_size = 500
+            for i in range(0, len(all_parsed), chunk_size):
+                chunk = all_parsed[i : i + chunk_size]
+                chunk_stats = upsert_catalog_entries(db, chunk)
+                stats["inserted"] += chunk_stats["inserted"]
+                stats["updated"] += chunk_stats["updated"]
+                stats["skipped"] += chunk_stats["skipped"]
+                total_done = min(i + chunk_size, len(all_parsed))
+                print(
+                    f"   Progress: {total_done}/{len(all_parsed)} "
+                    f"(+{chunk_stats['inserted']} new, +{chunk_stats['updated']} updated)"
+                )
+        else:
+            stats = upsert_catalog_entries(db, all_parsed)
+
         print(f"   ✅ Inserted: {stats['inserted']}, Updated: {stats['updated']}, Skipped: {stats['skipped']}\n")
     finally:
         db.close()

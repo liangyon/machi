@@ -1,4 +1,4 @@
-.PHONY: dev backend frontend migrate migration test ingest-anime ingest-anime-small catalog-stats embed
+.PHONY: dev backend frontend migrate migration test ingest-anime ingest-anime-all ingest-anime-all-no-embed ingest-anime-small catalog-stats embed
 
 # ── Development ──────────────────────────────────────
 
@@ -31,6 +31,16 @@ migration:
 ## Fetches top 250 anime + 4 recent seasons (~500-700 unique anime)
 ingest-anime:
 	cd backend && uv run python -m app.cli ingest-anime --pages 10 --seasons 4
+
+## Ingest the ENTIRE MAL catalog (~27,000 anime) — one-time operation
+## Takes ~10-15 min to fetch + ~5 min to embed (~$0.50-1.00 OpenAI cost)
+## You can split it: first run with --skip-embed, then run `make embed`
+ingest-anime-all:
+	cd backend && uv run python -m app.cli ingest-anime --all
+
+## Same as above but skip embedding (fetch only, embed later with `make embed`)
+ingest-anime-all-no-embed:
+	cd backend && uv run python -m app.cli ingest-anime --all --skip-embed
 
 ## Quick test ingestion (2 pages = 50 anime, no embedding)
 ingest-anime-small:

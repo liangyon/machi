@@ -225,8 +225,8 @@ class TestBuildUserPrompt:
         prompt = build_user_prompt(MOCK_PROFILE, MOCK_CANDIDATES)
         assert "Cowboy Bebop" in prompt
         assert "Hunter x Hunter" in prompt
-        assert "mal_id=1" in prompt
-        assert "mal_id=11061" in prompt
+        assert "mal_id: 1" in prompt
+        assert "mal_id: 11061" in prompt
 
     def test_includes_recommendation_count(self):
         """Prompt should specify how many recs to generate."""
@@ -319,8 +319,8 @@ class TestFormatCandidates:
 
     def test_includes_mal_ids(self):
         result = _format_candidates(MOCK_CANDIDATES)
-        assert "mal_id=1" in result
-        assert "mal_id=11061" in result
+        assert "mal_id: 1" in result
+        assert "mal_id: 11061" in result
 
     def test_includes_metadata(self):
         result = _format_candidates(MOCK_CANDIDATES)
@@ -490,6 +490,62 @@ class TestParseRecommendations:
 
         result = parse_recommendations(response, MOCK_CANDIDATES)
         assert len(result) == 1
+
+    def test_title_fallback_corrects_wrong_mal_id(self):
+        """If LLM uses wrong mal_id but correct title, match by title.
+
+        This is the key fix for the bug where the LLM used index
+        numbers (1, 2, 3) instead of actual mal_ids (52991, 38524).
+        The title-based fallback catches this and corrects the mal_id.
+        """
+        response = json.dumps([
+            {
+                "mal_id": 42,  # WRONG — not a real candidate mal_id
+                "title": "Hunter x Hunter (2011)",  # RIGHT — matches candidate
+                "reasoning": "Great adventure anime.",
+                "confidence": "high",
+                "similar_to": [],
+            }
+        ])
+
+        result = parse_recommendations(response, MOCK_CANDIDATES)
+
+        # Should match by title and correct the mal_id
+        assert len(result) == 1
+        assert result[0]["mal_id"] == 11061  # corrected to real mal_id
+        assert result[0]["title"] == "Hunter x Hunter (2011)"
+        assert result[0]["genres"] == "Action, Adventure, Fantasy"
+
+    def test_title_fallback_case_insensitive(self):
+        """Title matching should be case-insensitive."""
+        response = json.dumps([
+            {
+                "mal_id": 999,
+                "title": "cowboy bebop",  # lowercase
+                "reasoning": "Good.",
+                "confidence": "high",
+                "similar_to": [],
+            }
+        ])
+
+        result = parse_recommendations(response, MOCK_CANDIDATES)
+        assert len(result) == 1
+        assert result[0]["mal_id"] == 1  # matched Cowboy Bebop
+
+    def test_title_fallback_skips_if_no_title_match(self):
+        """If both mal_id and title are wrong, skip the item."""
+        response = json.dumps([
+            {
+                "mal_id": 42,
+                "title": "Totally Made Up Anime",
+                "reasoning": "...",
+                "confidence": "high",
+                "similar_to": [],
+            }
+        ])
+
+        result = parse_recommendations(response, MOCK_CANDIDATES)
+        assert len(result) == 0
 
 
 # ═════════════════════════════════════════════════════════

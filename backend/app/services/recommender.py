@@ -280,16 +280,17 @@ def build_system_prompt() -> str:
 
 CRITICAL RULES:
 1. You may ONLY recommend anime from the "CANDIDATE ANIME" list provided. Do NOT invent or suggest anime not in that list.
-2. Each recommendation MUST include specific reasoning tied to the user's preferences — reference their favourite shows, genres, or patterns.
-3. Do NOT recommend anime the user has already watched (they are excluded from candidates, but double-check).
-4. Vary your recommendations — don't just pick the same genre repeatedly. Show range while staying relevant.
+2. The "mal_id" for each recommendation MUST be the EXACT numeric mal_id shown in the candidate list (e.g. 52991, 38524, 11061). These are large numbers, typically 3-6 digits. Do NOT use sequential numbers like 1, 2, 3.
+3. Each recommendation MUST include specific reasoning tied to the user's preferences — reference their favourite shows, genres, or patterns.
+4. Do NOT recommend anime the user has already watched (they are excluded from candidates, but double-check).
+5. Vary your recommendations — don't just pick the same genre repeatedly. Show range while staying relevant.
 
 OUTPUT FORMAT:
 Respond with a JSON array. Each element must have exactly these fields:
 ```json
 [
   {
-    "mal_id": 1234,
+    "mal_id": 52991,
     "title": "Anime Title",
     "reasoning": "A 2-3 sentence explanation of WHY this user would enjoy this anime. Reference specific shows they liked or patterns in their taste profile.",
     "confidence": "high|medium|low",
@@ -405,10 +406,18 @@ def parse_recommendations(
     Returns:
         List of validated, enriched recommendation dicts.
     """
-    # Build a lookup of candidates by mal_id for validation
+    # Build lookups for validation — by mal_id AND by title
+    # The title lookup is a fallback: if the LLM returns the right
+    # title but wrong mal_id (e.g. uses index number instead of
+    # actual mal_id), we can still match it.
     candidate_lookup: dict[int, dict] = {
         c["mal_id"]: c for c in candidates if c.get("mal_id")
     }
+    title_lookup: dict[str, dict] = {}
+    for c in candidates:
+        title = (c.get("metadata", {}).get("title") or c.get("title", "")).lower().strip()
+        if title:
+            title_lookup[title] = c
 
     # ── Clean the response ───────────────────────────────
     cleaned = _clean_json_response(raw_response)
@@ -436,16 +445,36 @@ def parse_recommendations(
             continue
 
         mal_id = item.get("mal_id")
-        if not mal_id or mal_id not in candidate_lookup:
-            # LLM hallucinated a mal_id not in our candidates — skip it
-            logger.warning(
-                "LLM recommended mal_id=%s which is not in candidates, skipping",
-                mal_id,
-            )
-            continue
+        candidate = None
+
+        if mal_id and mal_id in candidate_lookup:
+            # Happy path: mal_id matches a candidate directly
+            candidate = candidate_lookup[mal_id]
+        else:
+            # Fallback: try to match by title instead.
+            # This catches the case where the LLM used the right title
+            # but wrong mal_id (e.g. used index number 1,2,3 instead
+            # of the actual 5-digit mal_id).
+            item_title = (item.get("title") or "").lower().strip()
+            if item_title and item_title in title_lookup:
+                candidate = title_lookup[item_title]
+                real_mal_id = candidate.get("mal_id", 0)
+                logger.info(
+                    "LLM used wrong mal_id=%s but title '%s' matched candidate mal_id=%s — correcting",
+                    mal_id,
+                    item.get("title"),
+                    real_mal_id,
+                )
+                mal_id = real_mal_id
+            else:
+                logger.warning(
+                    "LLM recommended mal_id=%s (title='%s') which is not in candidates, skipping",
+                    mal_id,
+                    item.get("title", "?"),
+                )
+                continue
 
         # Enrich with metadata from the candidate
-        candidate = candidate_lookup[mal_id]
         metadata = candidate.get("metadata", {})
 
         recommendation = {
@@ -782,7 +811,7 @@ def _format_candidates(candidates: list[dict]) -> str:
         "",
     ]
 
-    for i, candidate in enumerate(candidates, 1):
+    for candidate in candidates:
         metadata = candidate.get("metadata", {})
         title = metadata.get("title", candidate.get("title", "Unknown"))
         mal_id = candidate.get("mal_id", 0)
@@ -799,8 +828,13 @@ def _format_candidates(candidates: list[dict]) -> str:
             candidate.get("embedding_text", ""), max_length=200
         )
 
+        # IMPORTANT: We lead with "mal_id: NNNNN" on its own line
+        # and avoid [i] numbering.  Previous format used [1], [2], etc.
+        # which the LLM confused with the mal_id.  Now the mal_id is
+        # the ONLY number that looks like an ID.
         line = (
-            f"[{i}] mal_id={mal_id} | {title}"
+            f"--- mal_id: {mal_id} ---"
+            f"\n    Title: {title}"
             f"\n    Type: {anime_type} | Year: {year} | MAL Score: {mal_score}"
             f"\n    Genres: {genres}"
         )
