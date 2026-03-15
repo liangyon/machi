@@ -24,8 +24,15 @@ Design decisions
   used or not.  If True, the frontend can show a subtle notice like
   "AI reasoning unavailable — showing best matches from your profile."
 
-• RecommendationFeedbackRequest is simple for now (liked/disliked).
-  In Phase 3.5 we can expand it with more nuanced feedback.
+• Phase 3.5 additions:
+  - ``RecommendationSessionSummary`` — lightweight view of a past
+    session for the history endpoint (id, timestamp, query, count).
+  - ``RecommendationHistoryResponse`` — wraps a list of summaries.
+  - ``RecommendationFeedbackResponse`` now includes ``profile_updated``
+    to tell the frontend whether the feedback was applied to the
+    user's preference profile.
+  - ``UserFeedbackMapResponse`` — returns a {mal_id: feedback_type}
+    map so the frontend can show which recs the user already rated.
 """
 
 from datetime import datetime
@@ -169,8 +176,85 @@ class RecommendationResponse(BaseModel):
 
 
 class RecommendationFeedbackResponse(BaseModel):
-    """Response after submitting feedback on a recommendation."""
+    """Response after submitting feedback on a recommendation.
+
+    Phase 3.5: Added ``profile_updated`` flag so the frontend knows
+    whether the feedback was applied to the user's preference profile.
+    This lets the UI show "Your preferences have been updated" or
+    prompt the user to regenerate recommendations.
+    """
 
     mal_id: int
     feedback: str
     message: str = "Feedback recorded. Thank you!"
+    profile_updated: bool = Field(
+        default=False,
+        description=(
+            "True if the user's preference profile was adjusted "
+            "based on this feedback."
+        ),
+    )
+
+
+# ═════════════════════════════════════════════════════════
+# Phase 3.5 — History & feedback persistence schemas
+# ═════════════════════════════════════════════════════════
+
+
+class RecommendationSessionSummary(BaseModel):
+    """Lightweight summary of a past recommendation session.
+
+    Used by the GET /history endpoint.  Contains just enough info
+    to render a history sidebar entry:
+    - When it was generated
+    - What query was used (if any)
+    - How many recommendations it produced
+    - Whether fallback was used
+
+    We deliberately exclude the full recommendation entries here —
+    those are loaded on demand when the user clicks a session.
+    This keeps the history endpoint fast (no loading 10+ recs
+    per session × 20 sessions = 200+ rows).
+    """
+
+    id: str
+    generated_at: datetime
+    custom_query: str | None = None
+    total_count: int = 0
+    used_fallback: bool = False
+
+
+class RecommendationHistoryResponse(BaseModel):
+    """GET /api/recommendations/history — list of past sessions.
+
+    Returns the most recent sessions (up to ``limit``) so the
+    frontend can render a history sidebar or dropdown.
+    """
+
+    sessions: list[RecommendationSessionSummary]
+    total: int = Field(description="Number of sessions returned.")
+
+
+class UserFeedbackMapResponse(BaseModel):
+    """GET /api/recommendations/feedback — user's feedback map.
+
+    Returns a {mal_id: feedback_type} mapping so the frontend can
+    show which recommendations the user already rated, even after
+    a page reload.  This replaces the in-memory ``feedbackGiven``
+    state in the frontend.
+
+    Example::
+
+        {
+            "feedback": {
+                "52991": "liked",
+                "38524": "disliked",
+                "11061": "watched"
+            }
+        }
+    """
+
+    feedback: dict[int, str] = Field(
+        default_factory=dict,
+        description="Mapping of MAL ID → feedback type (liked/disliked/watched).",
+    )

@@ -284,6 +284,7 @@ def _embed_unembedded_entries():
             {
                 "mal_id": e.mal_id,
                 "title": e.title,
+                "image_url": e.image_url,
                 "embedding_text": e.embedding_text,
                 "genres": e.genres,
                 "themes": e.themes,

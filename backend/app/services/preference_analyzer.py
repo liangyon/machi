@@ -28,6 +28,18 @@ Design decisions
 5. **Completion rate** — Do they finish what they start?  High
    completion rate → recommend confidently.  Low → maybe suggest
    shorter series or movies.
+
+Phase 3.5 additions
+───────────────────
+6. **Feedback adjustments** — ``apply_feedback_adjustments()`` takes
+   the base profile and a list of ``RecommendationFeedback`` records,
+   then adjusts genre/theme affinities based on user reactions:
+   - "liked" → boost genres/themes by +0.05
+   - "disliked" → reduce genres/themes by -0.03
+   The asymmetry is intentional: positive signals are stronger than
+   negative ones (disliking one romance anime doesn't mean you hate
+   all romance).  Adjustments are capped at [0.0, 1.0] to prevent
+   runaway feedback loops.
 """
 
 from collections import defaultdict
@@ -225,3 +237,203 @@ def _empty_profile() -> dict:
         "watch_era_preference": {},
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ═════════════════════════════════════════════════════════
+# Phase 3.5 — Feedback-driven preference tuning
+# ═════════════════════════════════════════════════════════
+#
+# This is the "learning" part of the recommendation engine.
+# Without it, every "Generate" call starts from the same base
+# profile.  With it, the system remembers: "you liked dark
+# thrillers and disliked romance comedies" and adjusts future
+# recommendations accordingly.
+#
+# How it works:
+# 1. Start with the base profile (computed from MAL list)
+# 2. For each "liked" feedback, boost the genres/themes of
+#    that anime by a small amount (+0.05)
+# 3. For each "disliked" feedback, reduce the genres/themes
+#    by a smaller amount (-0.03)
+# 4. Return the adjusted profile
+#
+# Why asymmetric adjustments?
+# ───────────────────────────
+# Positive signals are more reliable than negative ones.
+# If someone clicks 👍 on a dark thriller, they're actively
+# endorsing that genre.  But clicking 👎 on ONE romance anime
+# doesn't mean they hate ALL romance — maybe that specific
+# show just didn't appeal.  So we boost more than we penalise.
+#
+# Why small increments?
+# ─────────────────────
+# Large adjustments cause "filter bubbles" — the system only
+# recommends what you already like, creating an echo chamber.
+# Small increments (0.05, 0.03) mean it takes ~10 likes to
+# significantly shift a genre's affinity.  This is gradual
+# enough to avoid runaway feedback loops while still being
+# responsive to user preferences.
+#
+# Why cap at [0.0, 1.0]?
+# ──────────────────────
+# Affinity scores are normalised to 0–1.  Without capping,
+# repeated likes could push a genre to 1.5 or higher, which
+# would dominate the re-ranking formula unfairly.  Capping
+# ensures all genres compete on a level playing field.
+
+# Tuning constants — adjust these to change feedback sensitivity
+LIKED_BOOST = 0.05    # how much to boost per "liked" feedback
+DISLIKED_PENALTY = 0.03  # how much to reduce per "disliked" feedback
+MIN_AFFINITY = 0.0    # floor for affinity scores
+MAX_AFFINITY = 1.0    # ceiling for affinity scores
+
+
+def apply_feedback_adjustments(
+    base_profile: dict,
+    feedbacks: list,
+) -> dict:
+    """Apply feedback-based adjustments to a preference profile.
+
+    Takes the base profile (computed from the user's MAL list) and
+    a list of ``RecommendationFeedback`` records, then returns a
+    new profile with adjusted genre/theme affinities.
+
+    This is a pure function — it doesn't modify the base profile
+    or the feedback records.  It returns a new dict.
+
+    Args:
+        base_profile: The user's computed preference profile dict
+            (from ``UserPreferenceProfile.profile_data``).
+        feedbacks: List of ``RecommendationFeedback`` ORM objects
+            (or any objects with ``feedback_type``, ``genres``, and
+            ``themes`` attributes).
+
+    Returns:
+        A new profile dict with adjusted affinities.  If there are
+        no feedbacks, returns the base profile unchanged.
+
+    Example:
+        If the user liked an anime with genres "Action, Thriller"
+        and disliked one with "Romance, Comedy":
+
+        Before: Action affinity = 0.70, Romance affinity = 0.45
+        After:  Action affinity = 0.75, Romance affinity = 0.42
+    """
+    if not feedbacks:
+        return base_profile
+
+    # Deep copy the profile so we don't mutate the original.
+    # We only need to copy the affinity lists since those are
+    # the only parts we modify.
+    import copy
+    adjusted = copy.deepcopy(base_profile)
+
+    # Compute adjustments: {genre_name: total_delta}
+    genre_deltas: dict[str, float] = defaultdict(float)
+    theme_deltas: dict[str, float] = defaultdict(float)
+
+    for fb in feedbacks:
+        feedback_type = fb.feedback_type if hasattr(fb, "feedback_type") else fb.get("feedback_type", "")
+        genres_str = fb.genres if hasattr(fb, "genres") else fb.get("genres", "")
+        themes_str = fb.themes if hasattr(fb, "themes") else fb.get("themes", "")
+
+        if feedback_type == "liked":
+            delta = LIKED_BOOST
+        elif feedback_type == "disliked":
+            delta = -DISLIKED_PENALTY
+        else:
+            # "watched" feedback doesn't affect affinities —
+            # it only affects the exclusion set (handled in the API layer)
+            continue
+
+        # Apply delta to each genre of this anime
+        if genres_str:
+            for genre in genres_str.split(","):
+                genre = genre.strip()
+                if genre:
+                    genre_deltas[genre] += delta
+
+        # Apply delta to each theme of this anime
+        if themes_str:
+            for theme in themes_str.split(","):
+                theme = theme.strip()
+                if theme:
+                    theme_deltas[theme] += delta
+
+    # Apply genre adjustments
+    adjusted["genre_affinity"] = _apply_deltas(
+        adjusted.get("genre_affinity", []),
+        genre_deltas,
+    )
+
+    # Apply theme adjustments
+    adjusted["theme_affinity"] = _apply_deltas(
+        adjusted.get("theme_affinity", []),
+        theme_deltas,
+    )
+
+    return adjusted
+
+
+def _apply_deltas(
+    affinity_list: list[dict],
+    deltas: dict[str, float],
+) -> list[dict]:
+    """Apply accumulated deltas to an affinity list.
+
+    For each entry in the affinity list, if there's a delta for
+    that genre/theme, add it to the affinity score (clamped to
+    [MIN_AFFINITY, MAX_AFFINITY]).
+
+    If a delta exists for a genre/theme NOT in the list (e.g.,
+    the user liked an anime with a genre they haven't watched
+    much of), we add a new entry with a base affinity of 0.3
+    plus the delta.  This lets feedback introduce new genres
+    into the profile.
+
+    Args:
+        affinity_list: List of affinity dicts (each has "genre",
+            "count", "avg_score", "affinity" keys).
+        deltas: {name: total_delta} mapping.
+
+    Returns:
+        New affinity list with adjustments applied, re-sorted
+        by affinity descending.
+    """
+    if not deltas:
+        return affinity_list
+
+    # Build a lookup for existing entries
+    existing: dict[str, dict] = {}
+    result: list[dict] = []
+
+    for entry in affinity_list:
+        name = entry.get("genre", "")
+        # Copy the entry so we don't mutate the original
+        new_entry = dict(entry)
+
+        if name in deltas:
+            new_affinity = new_entry["affinity"] + deltas[name]
+            new_entry["affinity"] = round(
+                max(MIN_AFFINITY, min(MAX_AFFINITY, new_affinity)), 3
+            )
+
+        existing[name] = new_entry
+        result.append(new_entry)
+
+    # Add new entries for genres/themes not already in the list
+    for name, delta in deltas.items():
+        if name not in existing:
+            # Base affinity of 0.3 for newly discovered genres
+            # (not 0.0, because the user showed interest via feedback)
+            new_affinity = max(MIN_AFFINITY, min(MAX_AFFINITY, 0.3 + delta))
+            result.append({
+                "genre": name,
+                "count": 0,  # not from their watch history
+                "avg_score": 0.0,
+                "affinity": round(new_affinity, 3),
+            })
+
+    # Re-sort by affinity descending
+    result.sort(key=lambda x: x["affinity"], reverse=True)
+    return result

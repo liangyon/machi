@@ -377,6 +377,8 @@ def _build_metadata(entry: dict) -> dict:
         metadata["title"] = str(entry["title"])
 
     # Optional fields (only include if present)
+    if entry.get("image_url"):
+        metadata["image_url"] = str(entry["image_url"])
     if entry.get("genres"):
         metadata["genres"] = str(entry["genres"])
     if entry.get("themes"):

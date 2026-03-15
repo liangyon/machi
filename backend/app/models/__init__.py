@@ -7,3 +7,9 @@ from app.models.anime import (  # noqa: F401
     UserPreferenceProfile,
     AnimeCatalogEntry,
 )
+from app.models.recommendation import (  # noqa: F401
+    RecommendationSession,
+    RecommendationEntry,
+    RecommendationFeedback,
+)
+from app.models.watchlist import WatchlistEntry  # noqa: F401
