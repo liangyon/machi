@@ -40,13 +40,27 @@ Endpoint design
 """
 
 from datetime import datetime, timezone
+from time import perf_counter
+from threading import Lock
+from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func as sa_func
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
+from app.core.config import settings
+from app.core.exceptions import AppError
 from app.core.logging import logger
+from app.core.metrics import (
+    RecommendationJobSnapshot,
+    get_metrics_summary,
+    get_recent_jobs,
+    increment,
+    observe_latency,
+    record_recent_job,
+)
+from app.db.session import SessionLocal
 from app.models.anime import AnimeEntry, AnimeList, UserPreferenceProfile
 from app.models.recommendation import (
     RecommendationEntry,
@@ -57,17 +71,25 @@ from app.models.user import User
 from app.schemas.recommendation import (
     RecommendationFeedbackRequest,
     RecommendationFeedbackResponse,
+    RecommendationGenerateAccepted,
     RecommendationHistoryResponse,
     RecommendationItem,
+    RecommendationJobStatusResponse,
     RecommendationRequest,
     RecommendationResponse,
     RecommendationSessionSummary,
     UserFeedbackMapResponse,
 )
 from app.services.preference_analyzer import apply_feedback_adjustments
-from app.services.recommender import generate_recommendations
+from app.services.recommender import GuardrailError, generate_recommendations
 
 router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
+
+
+# Lightweight in-process job status store.
+# For current single-instance scope, this is enough to power progress UI.
+_generation_jobs: dict[str, dict] = {}
+_generation_jobs_lock = Lock()
 
 
 # ═════════════════════════════════════════════════════════
@@ -75,9 +97,10 @@ router = APIRouter(prefix="/recommendations", tags=["Recommendations"])
 # ═════════════════════════════════════════════════════════
 
 
-@router.post("/generate", response_model=RecommendationResponse)
+@router.post("/generate", response_model=RecommendationGenerateAccepted, status_code=202)
 def generate_recs(
     body: RecommendationRequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -99,7 +122,32 @@ def generate_recs(
     - User must be logged in
     - User must have imported their MAL list (preference profile exists)
     """
-    # ── Check prerequisites ──────────────────────────────
+    # ── Check prerequisites up-front for fast failure ───
+    if body.num_recommendations > settings.RECOMMEND_MAX_ITEMS_PER_REQUEST:
+        raise AppError(
+            code="VALIDATION_ERROR",
+            message=(
+                "Requested recommendation count exceeds configured limit. "
+                f"Maximum is {settings.RECOMMEND_MAX_ITEMS_PER_REQUEST}."
+            ),
+            status_code=422,
+            details={
+                "field": "num_recommendations",
+                "max": settings.RECOMMEND_MAX_ITEMS_PER_REQUEST,
+            },
+        )
+
+    if body.custom_query and len(body.custom_query) > settings.RECOMMEND_MAX_CUSTOM_QUERY_CHARS:
+        raise AppError(
+            code="VALIDATION_ERROR",
+            message="Custom query exceeds maximum length.",
+            status_code=422,
+            details={
+                "field": "custom_query",
+                "max_chars": settings.RECOMMEND_MAX_CUSTOM_QUERY_CHARS,
+            },
+        )
+
     profile = db.execute(
         select(UserPreferenceProfile).where(
             UserPreferenceProfile.user_id == user.id
@@ -107,110 +155,79 @@ def generate_recs(
     ).scalar_one_or_none()
 
     if not profile:
-        raise HTTPException(
-            status_code=404,
-            detail=(
+        raise AppError(
+            code="NOT_FOUND",
+            message=(
                 "No preference profile found. "
                 "Import your MAL list first via POST /api/mal/import."
             ),
+            status_code=404,
         )
 
-    # ── Apply feedback adjustments to the profile ────────
-    # This is the key Phase 3.5 addition: feedback from previous
-    # sessions modifies the preference profile so the retriever
-    # and LLM produce better results over time.
-    feedbacks = db.execute(
-        select(RecommendationFeedback).where(
-            RecommendationFeedback.user_id == user.id
-        )
-    ).scalars().all()
-
-    adjusted_profile = apply_feedback_adjustments(
-        profile.profile_data, feedbacks
+    # ── Queue background generation job ──────────────────
+    job_id = str(uuid4())
+    _set_job(
+        job_id,
+        {
+            "job_id": job_id,
+            "user_id": user.id,
+            "status": "queued",
+            "progress": 0,
+            "stage": "queued",
+            "error": None,
+            "session_id": None,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        },
     )
 
-    # ── Get watched anime IDs (to exclude from recommendations) ──
-    watched_mal_ids = _get_watched_mal_ids(user.id, db)
+    normalized_query = _sanitize_custom_query(body.custom_query)
 
-    # ── Also exclude disliked + "watched" feedback anime ─
-    # "disliked" → user explicitly said "not for me"
-    # "watched" → user said they already watched it (not on MAL list)
-    feedback_exclude_ids = _get_feedback_exclude_ids(user.id, db)
-    all_exclude_ids = watched_mal_ids | feedback_exclude_ids
-
-    # ── Generate recommendations ─────────────────────────
-    try:
-        raw_recommendations = generate_recommendations(
-            preference_profile=adjusted_profile,
-            watched_mal_ids=all_exclude_ids,
-            num_recommendations=body.num_recommendations,
-            custom_query=body.custom_query,
-        )
-    except ValueError as e:
-        # No candidates found (empty vector store)
-        raise HTTPException(status_code=422, detail=str(e))
-    except RuntimeError as e:
-        # OpenAI API key not configured
-        raise HTTPException(status_code=500, detail=str(e))
-
-    # ── Persist to database ──────────────────────────────
-    # This is the big Phase 3.5 change: instead of storing in a
-    # Python dict, we create database rows.  This means:
-    # • Recommendations survive server restarts
-    # • We can show history of past sessions
-    # • We have an audit trail of what was recommended
-    used_fallback = any(
-        rec.get("is_fallback", False) for rec in raw_recommendations
+    background_tasks.add_task(
+        _run_generation_job,
+        job_id,
+        user.id,
+        body.num_recommendations,
+        normalized_query,
     )
-
-    session_record = RecommendationSession(
-        user_id=user.id,
-        custom_query=body.custom_query,
-        used_fallback=used_fallback,
-        total_count=len(raw_recommendations),
-    )
-    db.add(session_record)
-    db.flush()  # Ensure session_record.id is available for entries
-
-    # Create an entry for each recommendation
-    for rec in raw_recommendations:
-        entry = RecommendationEntry(
-            session_id=session_record.id,
-            mal_id=rec.get("mal_id", 0),
-            title=rec.get("title", "Unknown"),
-            image_url=rec.get("image_url"),
-            genres=rec.get("genres", ""),
-            themes=rec.get("themes", ""),
-            synopsis=rec.get("synopsis", ""),
-            mal_score=rec.get("mal_score"),
-            year=rec.get("year"),
-            anime_type=rec.get("anime_type"),
-            reasoning=rec.get("reasoning", "No reasoning provided."),
-            confidence=rec.get("confidence", "medium"),
-            similar_to=rec.get("similar_to", []),
-            similarity_score=rec.get("similarity_score", 0.0),
-            preference_score=rec.get("preference_score", 0.0),
-            combined_score=rec.get("combined_score", 0.0),
-            is_fallback=rec.get("is_fallback", False),
-        )
-        db.add(entry)
-
-    db.commit()
-    # Refresh to get the generated timestamps and eager-loaded entries
-    db.refresh(session_record)
-
-    # ── Build response ───────────────────────────────────
-    response = _session_to_response(session_record)
 
     logger.info(
-        "Generated %d recommendations for user %s (fallback=%s, session=%s)",
-        len(raw_recommendations),
+        "recommendation_job_enqueued job_id=%s user_id=%s num_recommendations=%d",
+        job_id,
         user.id,
-        used_fallback,
-        session_record.id,
+        body.num_recommendations,
     )
 
-    return response
+    return RecommendationGenerateAccepted(
+        job_id=job_id,
+        status="queued",
+        progress=0,
+        stage="queued",
+    )
+
+
+@router.get("/status/{job_id}", response_model=RecommendationJobStatusResponse)
+def get_generation_status(
+    job_id: str,
+    user: User = Depends(get_current_user),
+):
+    """Return current status for a recommendation generation job."""
+    job = _get_job(job_id)
+
+    if not job or job.get("user_id") != user.id:
+        raise AppError(
+            code="NOT_FOUND",
+            message="Generation job not found.",
+            status_code=404,
+        )
+
+    return RecommendationJobStatusResponse(
+        job_id=job_id,
+        status=job.get("status", "queued"),
+        progress=int(job.get("progress", 0)),
+        stage=job.get("stage", "queued"),
+        error=job.get("error"),
+        session_id=job.get("session_id"),
+    )
 
 
 # ═════════════════════════════════════════════════════════
@@ -239,12 +256,13 @@ def get_latest_recs(
     ).scalar_one_or_none()
 
     if not session_record:
-        raise HTTPException(
-            status_code=404,
-            detail=(
+        raise AppError(
+            code="NOT_FOUND",
+            message=(
                 "No recommendations generated yet. "
                 "Click 'Generate' to get personalised recommendations."
             ),
+            status_code=404,
         )
 
     return _session_to_response(session_record)
@@ -413,6 +431,23 @@ def get_user_feedback(
     return UserFeedbackMapResponse(feedback=feedback_map)
 
 
+@router.get("/jobs/recent")
+def get_recent_generation_jobs(
+    limit: int = Query(default=20, ge=1, le=100),
+    user: User = Depends(get_current_user),
+):
+    """Return recent recommendation generation job summaries.
+
+    Current scope is single-instance visibility for quick diagnostics.
+    """
+    jobs = [j for j in get_recent_jobs(limit=limit * 2) if j.get("user_id") == user.id]
+    return {
+        "jobs": jobs[:limit],
+        "total": len(jobs[:limit]),
+        "metrics": get_metrics_summary(),
+    }
+
+
 # ═════════════════════════════════════════════════════════
 # GET /api/recommendations/{session_id}
 # ═════════════════════════════════════════════════════════
@@ -446,9 +481,10 @@ def get_session_recs(
     ).scalar_one_or_none()
 
     if not session_record:
-        raise HTTPException(
+        raise AppError(
+            code="NOT_FOUND",
+            message="Recommendation session not found.",
             status_code=404,
-            detail="Recommendation session not found.",
         )
 
     return _session_to_response(session_record)
@@ -547,3 +583,212 @@ def _get_feedback_exclude_ids(user_id: str, db: Session) -> set[int]:
     ).scalars().all()
 
     return set(feedback_ids)
+
+
+def _set_job(job_id: str, payload: dict) -> None:
+    with _generation_jobs_lock:
+        _generation_jobs[job_id] = payload
+
+
+def _get_job(job_id: str) -> dict | None:
+    with _generation_jobs_lock:
+        job = _generation_jobs.get(job_id)
+        return dict(job) if job else None
+
+
+def _update_job(job_id: str, **updates) -> None:
+    with _generation_jobs_lock:
+        current = _generation_jobs.get(job_id)
+        if not current:
+            return
+        current.update(updates)
+        current["updated_at"] = datetime.now(timezone.utc).isoformat()
+        _generation_jobs[job_id] = current
+
+
+def _sanitize_custom_query(custom_query: str | None) -> str | None:
+    if not custom_query:
+        return None
+    query = custom_query.strip()
+    return query if query else None
+
+
+def _run_generation_job(
+    job_id: str,
+    user_id: str,
+    num_recommendations: int,
+    custom_query: str | None,
+) -> None:
+    """Background task that generates and persists recommendation session."""
+    db = SessionLocal()
+    started = perf_counter()
+    increment("recommendation_total")
+    try:
+        _update_job(job_id, status="running", progress=10, stage="validating")
+
+        profile = db.execute(
+            select(UserPreferenceProfile).where(UserPreferenceProfile.user_id == user_id)
+        ).scalar_one_or_none()
+        if not profile:
+            raise ValueError("No preference profile found. Import your MAL list first.")
+
+        _update_job(job_id, progress=25, stage="loading_profile")
+        feedbacks = db.execute(
+            select(RecommendationFeedback).where(RecommendationFeedback.user_id == user_id)
+        ).scalars().all()
+        adjusted_profile = apply_feedback_adjustments(profile.profile_data, feedbacks)
+
+        _update_job(job_id, progress=45, stage="retrieving_candidates")
+        watched_mal_ids = _get_watched_mal_ids(user_id, db)
+        feedback_exclude_ids = _get_feedback_exclude_ids(user_id, db)
+        all_exclude_ids = watched_mal_ids | feedback_exclude_ids
+
+        _update_job(job_id, progress=75, stage="generating_recommendations")
+        raw_recommendations = generate_recommendations(
+            preference_profile=adjusted_profile,
+            watched_mal_ids=all_exclude_ids,
+            num_recommendations=num_recommendations,
+            custom_query=custom_query,
+            timeout_budget_seconds=settings.RECOMMEND_JOB_TIMEOUT_SECONDS,
+            max_input_chars=settings.LLM_MAX_INPUT_CHARS,
+            max_estimated_cost_usd=settings.LLM_MAX_ESTIMATED_COST_USD,
+        )
+
+        _update_job(job_id, progress=90, stage="persisting")
+        used_fallback = any(rec.get("is_fallback", False) for rec in raw_recommendations)
+
+        session_record = RecommendationSession(
+            user_id=user_id,
+            custom_query=custom_query,
+            used_fallback=used_fallback,
+            total_count=len(raw_recommendations),
+        )
+        db.add(session_record)
+        db.flush()
+
+        for rec in raw_recommendations:
+            entry = RecommendationEntry(
+                session_id=session_record.id,
+                mal_id=rec.get("mal_id", 0),
+                title=rec.get("title", "Unknown"),
+                image_url=rec.get("image_url"),
+                genres=rec.get("genres", ""),
+                themes=rec.get("themes", ""),
+                synopsis=rec.get("synopsis", ""),
+                mal_score=rec.get("mal_score"),
+                year=rec.get("year"),
+                anime_type=rec.get("anime_type"),
+                reasoning=rec.get("reasoning", "No reasoning provided."),
+                confidence=rec.get("confidence", "medium"),
+                similar_to=rec.get("similar_to", []),
+                similarity_score=rec.get("similarity_score", 0.0),
+                preference_score=rec.get("preference_score", 0.0),
+                combined_score=rec.get("combined_score", 0.0),
+                is_fallback=rec.get("is_fallback", False),
+            )
+            db.add(entry)
+
+        db.commit()
+
+        _update_job(
+            job_id,
+            status="succeeded",
+            progress=100,
+            stage="completed",
+            session_id=session_record.id,
+            error=None,
+        )
+
+        elapsed_ms = int((perf_counter() - started) * 1000)
+        observe_latency(elapsed_ms)
+        increment("recommendation_success")
+        if used_fallback:
+            increment("recommendation_fallback")
+
+        record_recent_job(
+            RecommendationJobSnapshot(
+                job_id=job_id,
+                user_id=user_id,
+                status="succeeded",
+                stage="completed",
+                duration_ms=elapsed_ms,
+                used_fallback=used_fallback,
+                error_code=None,
+                error=None,
+            )
+        )
+
+        logger.info(
+            "recommendation_job_succeeded job_id=%s user_id=%s total=%d fallback=%s session_id=%s duration_ms=%d",
+            job_id,
+            user_id,
+            len(raw_recommendations),
+            used_fallback,
+            session_record.id,
+            elapsed_ms,
+        )
+    except GuardrailError as e:
+        db.rollback()
+        increment("recommendation_failed")
+        _update_job(job_id, status="failed", stage="failed", error=e.message, error_code=e.code)
+        record_recent_job(
+            RecommendationJobSnapshot(
+                job_id=job_id,
+                user_id=user_id,
+                status="failed",
+                stage="failed",
+                duration_ms=int((perf_counter() - started) * 1000),
+                used_fallback=False,
+                error_code=e.code,
+                error=e.message,
+            )
+        )
+        logger.warning(
+            "recommendation_job_failed job_id=%s user_id=%s code=%s message=%s",
+            job_id,
+            user_id,
+            e.code,
+            e.message,
+        )
+    except (ValueError, RuntimeError) as e:
+        db.rollback()
+        increment("recommendation_failed")
+        _update_job(job_id, status="failed", stage="failed", error=str(e), error_code="UPSTREAM_UNAVAILABLE")
+        record_recent_job(
+            RecommendationJobSnapshot(
+                job_id=job_id,
+                user_id=user_id,
+                status="failed",
+                stage="failed",
+                duration_ms=int((perf_counter() - started) * 1000),
+                used_fallback=False,
+                error_code="UPSTREAM_UNAVAILABLE",
+                error=str(e),
+            )
+        )
+        logger.warning("recommendation_job_failed job_id=%s user_id=%s error=%s", job_id, user_id, e)
+    except Exception as e:  # pragma: no cover - defensive catch
+        db.rollback()
+        increment("recommendation_failed")
+        _update_job(
+            job_id,
+            status="failed",
+            stage="failed",
+            error="Internal generation error",
+            error_code="INTERNAL_ERROR",
+        )
+        record_recent_job(
+            RecommendationJobSnapshot(
+                job_id=job_id,
+                user_id=user_id,
+                status="failed",
+                stage="failed",
+                duration_ms=int((perf_counter() - started) * 1000),
+                used_fallback=False,
+                error_code="INTERNAL_ERROR",
+                error="Internal generation error",
+            )
+        )
+        logger.exception("recommendation_job_failed_unexpected job_id=%s user_id=%s error=%s", job_id, user_id, e)
+    finally:
+        db.close()

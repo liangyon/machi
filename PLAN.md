@@ -186,12 +186,72 @@ This is the difference between a static tool and a learning recommendation engin
 
 **Goal**: Make it production-ready.
 
-1. **Caching** — Redis/in-memory for MAL API responses and recommendations
-2. **Background Jobs** — arq/celery for MAL import, catalog refresh, embedding generation
-3. **Rate Limiting & Error Handling** — Jikan rate limits, OpenAI fallbacks, input validation
-4. **Testing** — unit tests (preference analyzer, rec logic), integration tests (MAL pipeline), mocked LLM tests
-5. **UI Polish** — loading states, error boundaries, responsive design, anime cover images
-6. **Auth Flow** — smooth onboarding: login → MAL import → recommendations
+### Completed (UI Polish)
+
+1. **shadcn/ui Integration** — Initialized shadcn with base-nova style, installed 14 components (Button, Card, Input, Label, Badge, Separator, Avatar, DropdownMenu, Sheet, Skeleton, Alert, Tooltip, Sonner, NavigationMenu)
+2. **Navigation System** — Persistent top navbar with:
+   - Desktop: horizontal nav links (Dashboard, Recommendations, Import) with active state highlighting
+   - Mobile: hamburger → Sheet drawer with same nav links
+   - User dropdown menu (name, email, sign out)
+   - Theme toggle (light/dark/system) via next-themes
+3. **Route Groups** — Reorganized into `(app)/` (authenticated pages with navbar) and `(auth)/` (login/register with centered card layout)
+4. **Emoji Removal** — All emojis replaced with Lucide icons (ThumbsUp/Down, CheckCircle, Clock, AlertTriangle, Compass, Zap, Star, Sparkles, etc.)
+5. **Component Migration** — All pages migrated to shadcn components (Card, Button, Badge, Alert, Input, Label, Separator, Skeleton)
+6. **Loading States** — Skeleton screens matching real layouts on all pages (navbar, dashboard stats, recommendation cards)
+7. **Toast Notifications** — Sonner toasts for feedback actions, import progress, and errors
+8. **Dark Mode** — Full dark mode support via next-themes with system preference detection
+9. **Auth Flow** — Centralized auth guard in `(app)/layout.tsx`, smooth redirect flow
+
+10. **Watchlist Feature** — Full to-watch list decoupled from feedback:
+    - Backend: `WatchlistEntry` model with status tracking (to_watch/watching/completed/dropped), user rating (1-10), reaction/review text
+    - API: GET/POST/PATCH/DELETE `/api/watchlist` endpoints
+    - Recommendation cards: separate "Watchlist" bookmark button (doesn't influence algorithm) alongside feedback thumbs up/down (influences algorithm)
+    - Watchlist page: status filter tabs, inline status selector, 1-10 rating widget, reaction dialog
+    - Database migrations for `watchlist_entries` table
+11. **Image Support** — `image_url` propagated through vector store metadata and CLI embedding pipeline for cover art on recommendation and watchlist cards
+12. **Font Fix** — CSS variables moved to `html` element for proper Geist font rendering
+
+### Remaining (Lean Phase 4 — Agreed Scope)
+
+> **Direction chosen:** optimize for single-instance, low-traffic operation first.
+> Redis/arq are explicitly **deferred** unless scaling/latency reliability triggers require them.
+
+13. **Recommendation Loading UX (Progress Bar + Status API)**
+   - `POST /api/recommendations/generate` should return quickly with `job_id`
+   - Add `GET /api/recommendations/status/{job_id}` for polling (`queued/running/succeeded/failed`)
+   - Track milestone progress in backend (`validate -> retrieve profile -> rerank -> LLM -> persist`)
+   - Frontend recommendations page shows progress bar + stage text and transitions to results/errors
+
+14. **Observability Baseline (Must-have)**
+   - Request ID middleware and propagation in logs/responses
+   - Structured logs for recommendation lifecycle and external API calls
+   - Baseline metrics (latency, error rate by code, fallback rate, token usage, estimated LLM cost)
+   - Minimal internal visibility surface (log summary/admin endpoint) for recent recommendation jobs
+
+15. **LLM Cost Guardrails + Prompt Injection Safety**
+   - Config-driven caps: max recommendations/request, input size limits, timeout budget
+   - Guardrails for budget/limit breaches with explicit error codes
+   - Prompt design with strict trusted/untrusted content boundaries
+   - Never follow instructions inside retrieved synopsis/user content
+   - Strict response schema validation + deterministic fallback on malformed model output
+
+16. **Proper Error Codes + Secrets Hardening**
+   - Standard API error envelope: `{ error: { code, message, details, request_id } }`
+   - Stable code set (`VALIDATION_ERROR`, `RATE_LIMITED`, `UPSTREAM_TIMEOUT`, `UPSTREAM_UNAVAILABLE`, `LLM_BUDGET_EXCEEDED`, `INTERNAL_ERROR`, etc.)
+   - Centralized FastAPI exception handling + consistent HTTP mappings
+   - Production startup checks: reject default/weak `SECRET_KEY`, missing required provider keys
+   - Ensure secrets are never logged; update `.env.example` security guidance
+
+17. **Targeted Testing for Hardening Work**
+   - Unit tests: error mapping, settings validation, guardrail enforcement, prompt sanitization/output validation
+   - Integration tests: recommendation generation lifecycle + polling status flow + timeout/fallback behavior
+   - Security regression tests with injection-like fixtures in MAL/user content
+   - API contract tests to enforce consistent error envelope
+
+### Deferred for Later (When Needed)
+
+- **Redis shared cache** (defer until multi-instance or significant cache inconsistency/cost pressure)
+- **arq/celery background queue** (defer until frequent long-running jobs, reliability demands, or horizontal scaling)
 
 ---
 

@@ -1,5 +1,6 @@
 """Application configuration via pydantic-settings."""
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,6 +14,7 @@ class Settings(BaseSettings):
     # ── App ──────────────────────────────────────────────
     APP_NAME: str = "Machi"
     DEBUG: bool = False
+    ENVIRONMENT: str = "development"
 
     # ── Database ─────────────────────────────────────────
     DATABASE_URL: str = "sqlite:///./machi.db"
@@ -55,6 +57,15 @@ class Settings(BaseSettings):
     # Max tokens for the LLM response.  A single recommendation with
     # reasoning is ~150 tokens, so 10 recs ≈ 1500.  2000 gives headroom.
     OPENAI_CHAT_MAX_TOKENS: int = 2000
+
+    # ── Recommendation / LLM guardrails ────────────────
+    RECOMMEND_MAX_ITEMS_PER_REQUEST: int = 10
+    RECOMMEND_MAX_CUSTOM_QUERY_CHARS: int = 300
+    RECOMMEND_JOB_TIMEOUT_SECONDS: int = 45
+    LLM_MAX_INPUT_CHARS: int = 12000
+    LLM_MAX_OUTPUT_TOKENS: int = 2000
+    # Approximate guardrail to avoid runaway per-request spend.
+    LLM_MAX_ESTIMATED_COST_USD: float = Field(default=0.03, ge=0.0)
 
     # ── Vector Store (ChromaDB) ──────────────────────────
     # Where ChromaDB persists its data on disk.

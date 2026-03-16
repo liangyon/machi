@@ -175,6 +175,48 @@ class RecommendationResponse(BaseModel):
     )
 
 
+class RecommendationGenerateAccepted(BaseModel):
+    """Accepted response for async recommendation generation.
+
+    POST /api/recommendations/generate now returns quickly with a job id.
+    The frontend polls GET /api/recommendations/status/{job_id} until the
+    job succeeds or fails.
+    """
+
+    job_id: str
+    status: str = Field(
+        default="queued",
+        description="Current job status: queued/running/succeeded/failed.",
+    )
+    progress: int = Field(
+        default=0,
+        ge=0,
+        le=100,
+        description="Current progress percentage (0-100).",
+    )
+    stage: str = Field(
+        default="queued",
+        description="Current pipeline stage for user-facing progress text.",
+    )
+
+
+class RecommendationJobStatusResponse(BaseModel):
+    """Polling response for an async recommendation generation job."""
+
+    job_id: str
+    status: str = Field(description="queued/running/succeeded/failed")
+    progress: int = Field(ge=0, le=100)
+    stage: str
+    error: str | None = None
+    session_id: str | None = Field(
+        default=None,
+        description=(
+            "Recommendation session id when the job succeeds. "
+            "Useful if frontend wants to load that exact session."
+        ),
+    )
+
+
 class RecommendationFeedbackResponse(BaseModel):
     """Response after submitting feedback on a recommendation.
 

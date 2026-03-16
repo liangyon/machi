@@ -132,7 +132,11 @@ class TestGetCachedRecommendations:
         """Should return 404 if no recommendations have been generated."""
         resp = authed_client.get("/api/recommendations")
         assert resp.status_code == 404
-        assert "No recommendations generated" in resp.json()["detail"]
+        payload = resp.json()
+        assert payload["error"]["code"] == "NOT_FOUND"
+        assert "No recommendations generated" in payload["error"]["message"]
+        assert payload["error"]["request_id"]
+        assert resp.headers.get("X-Request-ID")
 
 
 # ═════════════════════════════════════════════════════════
@@ -254,3 +258,24 @@ class TestRequestValidation:
             json={"feedback": "liked"},
         )
         assert resp.status_code == 422
+
+    def test_guardrail_max_recommendations_enforced(self, authed_client: TestClient, monkeypatch):
+        """Configured max recommendations should be enforced even within schema range."""
+        monkeypatch.setattr("app.api.recommendations.settings.RECOMMEND_MAX_ITEMS_PER_REQUEST", 5)
+        resp = authed_client.post(
+            "/api/recommendations/generate",
+            json={"num_recommendations": 6},
+        )
+        assert resp.status_code == 422
+        payload = resp.json()
+        assert payload["error"]["code"] == "VALIDATION_ERROR"
+
+    def test_guardrail_custom_query_len_enforced(self, authed_client: TestClient, monkeypatch):
+        monkeypatch.setattr("app.api.recommendations.settings.RECOMMEND_MAX_CUSTOM_QUERY_CHARS", 10)
+        resp = authed_client.post(
+            "/api/recommendations/generate",
+            json={"custom_query": "this query is definitely too long"},
+        )
+        assert resp.status_code == 422
+        payload = resp.json()
+        assert payload["error"]["code"] == "VALIDATION_ERROR"

@@ -7,8 +7,14 @@
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL ?? "";
 
-interface ApiError {
-  detail: string;
+interface ApiErrorEnvelope {
+  error?: {
+    code?: string;
+    message?: string;
+    details?: unknown;
+    request_id?: string;
+  };
+  detail?: string;
 }
 
 /**
@@ -33,10 +39,17 @@ export async function fetchAPI<T = unknown>(
   });
 
   if (!res.ok) {
-    const body: ApiError = await res.json().catch(() => ({
+    const body: ApiErrorEnvelope = await res.json().catch(() => ({
       detail: res.statusText,
     }));
-    throw new Error(body.detail ?? `Request failed: ${res.status}`);
+
+    const requestId = body.error?.request_id ?? res.headers.get("X-Request-ID") ?? undefined;
+    const code = body.error?.code ?? "REQUEST_FAILED";
+    const message = body.error?.message ?? body.detail ?? `Request failed: ${res.status}`;
+
+    throw new Error(
+      requestId ? `[${code}] ${message} (request_id: ${requestId})` : `[${code}] ${message}`
+    );
   }
 
   return res.json() as Promise<T>;
