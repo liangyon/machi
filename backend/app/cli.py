@@ -94,6 +94,12 @@ def main():
         help="Embed all un-embedded catalog entries into the vector store",
     )
 
+    # ── seed-demo command ────────────────────────────────
+    subparsers.add_parser(
+        "seed-demo",
+        help="Seed a demo user with curated MAL data and pre-generated recommendations",
+    )
+
     args = parser.parse_args()
 
     if args.command == "ingest-anime":
@@ -102,6 +108,8 @@ def main():
         cmd_stats()
     elif args.command == "embed":
         cmd_embed()
+    elif args.command == "seed-demo":
+        cmd_seed_demo()
     else:
         parser.print_help()
         sys.exit(1)
@@ -378,6 +386,222 @@ def cmd_stats():
 def cmd_embed():
     """Embed all un-embedded catalog entries into the vector store."""
     _embed_unembedded_entries()
+
+
+# ═════════════════════════════════════════════════════════
+# seed-demo — create demo user with curated data
+# ═════════════════════════════════════════════════════════
+
+
+DEMO_USER_ID = "00000000-0000-0000-0000-000000000001"
+DEMO_SESSION_ID = "00000000-0000-0000-0000-000000000002"
+DEMO_LIST_ID = "00000000-0000-0000-0000-000000000003"
+
+
+def cmd_seed_demo():
+    """Seed a demo user with curated anime list, preference profile,
+    and pre-generated recommendations.
+
+    This creates everything needed for the landing page demo:
+    1. A demo user account (demo@machi.app)
+    2. A curated MAL import (~70 anime, diverse taste)
+    3. A computed preference profile (no OpenAI call needed)
+    4. Pre-generated recommendations with AI reasoning (hardcoded)
+
+    Idempotent: running multiple times updates existing data.
+    Zero external API cost — all data comes from the fixture file.
+    """
+    import json
+    from pathlib import Path
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+
+    from app.db.session import SessionLocal
+    from app.models.user import User
+    from app.models.anime import AnimeList, AnimeEntry, UserPreferenceProfile
+    from app.models.recommendation import RecommendationSession, RecommendationEntry
+    from app.services.auth import hash_password
+    from app.services.preference_analyzer import analyze_preferences
+
+    # ── Load fixture data ────────────────────────────────
+    fixture_path = Path(__file__).parent / "fixtures" / "demo_seed.json"
+    with open(fixture_path) as f:
+        fixture = json.load(f)
+
+    demo_cfg = fixture["demo_user"]
+    mal_username = fixture["mal_username"]
+    anime_entries_data = fixture["anime_entries"]
+    recommendations_data = fixture["recommendations"]
+
+    db = SessionLocal()
+    try:
+        # ── Step 1: Create or update demo user ───────────
+        print("👤 Creating demo user...")
+        existing_user = db.execute(
+            select(User).where(User.email == demo_cfg["email"])
+        ).scalar_one_or_none()
+
+        if existing_user:
+            user = existing_user
+            user.name = demo_cfg["name"]
+            user.hashed_password = hash_password(demo_cfg["password"])
+            print(f"   Updated existing user: {user.email} (id={user.id})")
+        else:
+            user = User(
+                id=DEMO_USER_ID,
+                email=demo_cfg["email"],
+                name=demo_cfg["name"],
+                provider=demo_cfg["provider"],
+                hashed_password=hash_password(demo_cfg["password"]),
+                is_verified=True,
+            )
+            db.add(user)
+            db.flush()
+            print(f"   Created user: {user.email} (id={user.id})")
+
+        user_id = user.id
+
+        # ── Step 2: Create anime list + entries ──────────
+        print(f"📋 Importing {len(anime_entries_data)} anime entries...")
+        existing_list = db.execute(
+            select(AnimeList).where(AnimeList.user_id == user_id)
+        ).scalar_one_or_none()
+
+        if existing_list:
+            # Delete old entries for clean re-seed
+            for entry in existing_list.entries:
+                db.delete(entry)
+            db.flush()
+            anime_list = existing_list
+            anime_list.mal_username = mal_username
+            anime_list.sync_status = "completed"
+        else:
+            anime_list = AnimeList(
+                id=DEMO_LIST_ID,
+                user_id=user_id,
+                mal_username=mal_username,
+                sync_status="completed",
+            )
+            db.add(anime_list)
+            db.flush()
+
+        # Add entries
+        orm_entries = []
+        for entry_data in anime_entries_data:
+            entry = AnimeEntry(
+                anime_list_id=anime_list.id,
+                mal_anime_id=entry_data["mal_anime_id"],
+                title=entry_data["title"],
+                title_english=entry_data.get("title_english"),
+                image_url=entry_data.get("image_url"),
+                watch_status=entry_data["watch_status"],
+                user_score=entry_data.get("user_score", 0),
+                episodes_watched=entry_data.get("episodes_watched", 0),
+                total_episodes=entry_data.get("total_episodes"),
+                anime_type=entry_data.get("anime_type"),
+                genres=entry_data.get("genres"),
+                themes=entry_data.get("themes"),
+                studios=entry_data.get("studios"),
+                year=entry_data.get("year"),
+                mal_score=entry_data.get("mal_score"),
+            )
+            db.add(entry)
+            orm_entries.append(entry)
+
+        anime_list.total_entries = len(orm_entries)
+        anime_list.last_synced_at = datetime.now(timezone.utc)
+        db.flush()
+        print(f"   Added {len(orm_entries)} entries to anime list")
+
+        # ── Step 3: Compute preference profile ───────────
+        print("🧠 Computing preference profile...")
+        profile_data = analyze_preferences(orm_entries)
+
+        existing_profile = db.execute(
+            select(UserPreferenceProfile).where(
+                UserPreferenceProfile.user_id == user_id
+            )
+        ).scalar_one_or_none()
+
+        if existing_profile:
+            existing_profile.profile_data = profile_data
+            existing_profile.anime_count = len(orm_entries)
+            existing_profile.generated_at = datetime.now(timezone.utc)
+            print("   Updated existing preference profile")
+        else:
+            profile = UserPreferenceProfile(
+                user_id=user_id,
+                profile_data=profile_data,
+                anime_count=len(orm_entries),
+                generated_at=datetime.now(timezone.utc),
+            )
+            db.add(profile)
+            print("   Created preference profile")
+
+        # ── Step 4: Create recommendation session ────────
+        print(f"🎯 Seeding {len(recommendations_data)} pre-generated recommendations...")
+
+        # Delete existing demo sessions
+        existing_sessions = db.execute(
+            select(RecommendationSession).where(
+                RecommendationSession.user_id == user_id
+            )
+        ).scalars().all()
+        for session in existing_sessions:
+            db.delete(session)
+        db.flush()
+
+        session = RecommendationSession(
+            id=DEMO_SESSION_ID,
+            user_id=user_id,
+            custom_query=None,
+            used_fallback=False,
+            total_count=len(recommendations_data),
+            generated_at=datetime.now(timezone.utc),
+        )
+        db.add(session)
+        db.flush()
+
+        for rec_data in recommendations_data:
+            rec_entry = RecommendationEntry(
+                session_id=session.id,
+                mal_id=rec_data["mal_id"],
+                title=rec_data["title"],
+                image_url=rec_data.get("image_url"),
+                genres=rec_data.get("genres", ""),
+                themes=rec_data.get("themes", ""),
+                synopsis=rec_data.get("synopsis", ""),
+                mal_score=rec_data.get("mal_score"),
+                year=rec_data.get("year"),
+                anime_type=rec_data.get("anime_type"),
+                reasoning=rec_data.get("reasoning", ""),
+                confidence=rec_data.get("confidence", "medium"),
+                similar_to=rec_data.get("similar_to", []),
+                similarity_score=rec_data.get("similarity_score", 0.0),
+                preference_score=rec_data.get("preference_score", 0.0),
+                combined_score=rec_data.get("combined_score", 0.0),
+                is_fallback=rec_data.get("is_fallback", False),
+            )
+            db.add(rec_entry)
+
+        db.commit()
+        print(f"   Created recommendation session with {len(recommendations_data)} entries")
+
+        # ── Summary ──────────────────────────────────────
+        print(f"\n🎉 Demo seed complete!")
+        print(f"   User:             {demo_cfg['email']} / {demo_cfg['password']}")
+        print(f"   Anime entries:    {len(orm_entries)}")
+        print(f"   Recommendations:  {len(recommendations_data)}")
+        print(f"   User ID:          {user_id}")
+        print(f"\n   The demo user's data is now available via /api/demo/* endpoints.")
+
+    except Exception as e:
+        db.rollback()
+        print(f"\n❌ Error seeding demo data: {e}")
+        raise
+    finally:
+        db.close()
 
 
 # ═════════════════════════════════════════════════════════
