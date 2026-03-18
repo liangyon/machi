@@ -10,15 +10,15 @@ services:
     image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
-      POSTGRES_USER: machi
-      POSTGRES_PASSWORD: machi_dev
-      POSTGRES_DB: machi
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U machi"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -32,12 +32,12 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://machi:machi_dev@postgres:5432/machi
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - ENVIRONMENT=development
       - DEBUG=true
       - CORS_ORIGINS=["http://localhost:3000"]
       - FRONTEND_URL=http://localhost:3000
-      - SECRET_KEY=docker-dev-secret-not-for-production
+      - SECRET_KEY=${DOCKER_SECRET_KEY}
       - CHROMA_PERSIST_DIR=/data/chroma
     env_file:
       - ./backend/.env  # For OPENAI_API_KEY, MAL_CLIENT_ID, etc.

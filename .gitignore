@@ -1,0 +1,11 @@
+# ── Root .gitignore ──────────────────────────────────
+# Environment variables (docker-compose secrets)
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
