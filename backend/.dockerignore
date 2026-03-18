@@ -1,0 +1,32 @@
+# Dependencies & virtual environments
+.venv/
+__pycache__/
+*.pyc
+
+# Database files (local dev only)
+*.db
+*.db-journal
+
+# ChromaDB local data
+chroma_data/
+
+# Environment files (secrets — set via Railway env vars)
+.env
+.env.*
+!.env.example
+!.env.production.example
+
+# Tests
+tests/
+.pytest_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# Docs
+README.md

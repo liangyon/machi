@@ -1,0 +1,65 @@
+# Local development with PostgreSQL (matches production)
+# Usage: docker compose up -d postgres && make dev
+#
+# Or run everything in containers:
+#   docker compose up --build
+
+services:
+  # ── PostgreSQL + pgvector ────────────────────────────
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: machi
+      POSTGRES_PASSWORD: machi_dev
+      POSTGRES_DB: machi
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U machi"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # ── FastAPI Backend ──────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://machi:machi_dev@postgres:5432/machi
+      - ENVIRONMENT=development
+      - DEBUG=true
+      - CORS_ORIGINS=["http://localhost:3000"]
+      - FRONTEND_URL=http://localhost:3000
+      - SECRET_KEY=docker-dev-secret-not-for-production
+      - CHROMA_PERSIST_DIR=/data/chroma
+    env_file:
+      - ./backend/.env  # For OPENAI_API_KEY, MAL_CLIENT_ID, etc.
+    volumes:
+      - chroma_data:/data/chroma
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Next.js Frontend ─────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  chroma_data:
