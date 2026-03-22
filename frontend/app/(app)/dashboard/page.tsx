@@ -12,6 +12,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth-context";
 import { fetchAPI } from "@/lib/api";
 import { Sparkles } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -83,7 +84,7 @@ export default function DashboardPage() {
             <AlertDescription>{error}</AlertDescription>
           </Alert>
           <Button onClick={() => router.push("/import")}>
-            Import MAL List
+            Import Your List
           </Button>
         </div>
       </div>
@@ -113,9 +114,17 @@ export default function DashboardPage() {
             <h1 className="text-3xl font-bold tracking-tight">
               Your Anime Profile
             </h1>
-            <p className="mt-1 text-sm text-muted-foreground">
-              Based on your MyAnimeList data
-            </p>
+            <div className="mt-1 flex items-center gap-2">
+              {profile.source && profile.imported_username ? (
+                <Badge variant="secondary">
+                  {profile.source === "anilist" ? "AniList" : "MyAnimeList"} · @{profile.imported_username}
+                </Badge>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Based on your anime list data
+                </p>
+              )}
+            </div>
           </div>
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => router.push("/import")}>

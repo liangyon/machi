@@ -2,7 +2,9 @@
 
 from fastapi import APIRouter
 
+from app.api.anilist import router as anilist_router
 from app.api.auth import router as auth_router
+from app.api.cauldron import router as cauldron_router
 from app.api.demo import router as demo_router
 from app.api.health import router as health_router
 from app.api.mal import router as mal_router
@@ -15,5 +17,7 @@ api_router.include_router(health_router)
 api_router.include_router(auth_router)
 api_router.include_router(demo_router)
 api_router.include_router(mal_router)
+api_router.include_router(anilist_router)
 api_router.include_router(recommendations_router)
+api_router.include_router(cauldron_router)
 api_router.include_router(watchlist_router)

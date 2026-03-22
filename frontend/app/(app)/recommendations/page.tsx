@@ -3,8 +3,9 @@
 /**
  * Recommendations Page — /recommendations
  *
- * AI-powered anime picks based on the user's taste profile.
- * Components extracted to @/components/recommendations/.
+ * History log of all past recommendation sessions.
+ * Browse, review, and give feedback on previously generated picks.
+ * To generate new recommendations, go to /discover.
  */
 
 import { useEffect, useState } from "react";
@@ -14,11 +15,11 @@ import { fetchAPI } from "@/lib/api";
 import { toast } from "sonner";
 import {
   AlertTriangle,
-  Compass,
-  Sparkles,
-  RefreshCw,
-  LayoutDashboard,
   Clock,
+  Compass,
+  LayoutList,
+  Layers,
+  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -26,17 +27,17 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { RecommendationCard } from "@/components/recommendations/recommendation-card";
+import { SwipeCardDeck } from "@/components/recommendations/swipe-card";
 import {
   HistorySidebar,
   MobileHistoryPanel,
 } from "@/components/recommendations/history-sidebar";
 import type {
   RecommendationResponse,
-  RecommendationGenerateAccepted,
-  RecommendationJobStatus,
   FeedbackMapResponse,
   HistoryResponse,
   SessionSummary,
+  RecommendationItem,
 } from "@/lib/types";
 
 export default function RecommendationsPage() {
@@ -45,149 +46,43 @@ export default function RecommendationsPage() {
 
   const [data, setData] = useState<RecommendationResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [feedbackGiven, setFeedbackGiven] = useState<Record<number, string>>(
-    {}
-  );
-
+  const [feedbackGiven, setFeedbackGiven] = useState<Record<number, string>>({});
   const [history, setHistory] = useState<SessionSummary[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showHistory, setShowHistory] = useState(false);
-  const [generationProgress, setGenerationProgress] = useState(0);
-  const [generationStage, setGenerationStage] = useState<string>("queued");
-
   const [watchlistIds, setWatchlistIds] = useState<Set<number>>(new Set());
+  const [viewMode, setViewMode] = useState<"list" | "cards">("cards");
 
-  const hasFeedback = Object.keys(feedbackGiven).length > 0;
-
-  const stageLabel = (stage: string) => {
-    const labels: Record<string, string> = {
-      queued: "Queued",
-      validating: "Validating request",
-      loading_profile: "Loading your profile",
-      retrieving_candidates: "Finding candidate anime",
-      generating_recommendations: "Generating AI recommendations",
-      persisting: "Saving recommendations",
-      completed: "Completed",
-      failed: "Failed",
-    };
-    return labels[stage] ?? stage;
-  };
-
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  // ── Fetch cached recommendations + feedback + history + watchlist ──
+  // ── Fetch most recent session + feedback + history + watchlist ──
   useEffect(() => {
     if (!user) return;
 
     Promise.all([
-      fetchAPI<RecommendationResponse>("/api/recommendations").catch(
-        () => null
-      ),
-      fetchAPI<FeedbackMapResponse>("/api/recommendations/feedback").catch(
-        () => ({ feedback: {} })
-      ),
-      fetchAPI<HistoryResponse>("/api/recommendations/history").catch(() => ({
-        sessions: [],
-        total: 0,
-      })),
-      fetchAPI<{ items: { mal_id: number }[] }>("/api/watchlist").catch(
-        () => ({ items: [] })
-      ),
+      fetchAPI<RecommendationResponse>("/api/recommendations").catch(() => null),
+      fetchAPI<FeedbackMapResponse>("/api/recommendations/feedback").catch(() => ({ feedback: {} })),
+      fetchAPI<HistoryResponse>("/api/recommendations/history").catch(() => ({ sessions: [], total: 0 })),
+      fetchAPI<{ items: { mal_id: number }[] }>("/api/watchlist").catch(() => ({ items: [] })),
     ]).then(([recs, feedback, hist, watchlist]) => {
       if (recs) setData(recs);
       if (feedback) setFeedbackGiven(feedback.feedback);
       if (hist) setHistory(hist.sessions);
-      if (watchlist)
-        setWatchlistIds(new Set(watchlist.items.map((i) => i.mal_id)));
+      if (watchlist) setWatchlistIds(new Set(watchlist.items.map((i) => i.mal_id)));
       setLoading(false);
     });
   }, [user]);
-
-  // ── Generate new recommendations ──────────────────
-  const handleGenerate = async (customQuery?: string) => {
-    setGenerating(true);
-    setError(null);
-    setGenerationProgress(0);
-    setGenerationStage("queued");
-
-    try {
-      const body: Record<string, unknown> = {};
-      if (customQuery) body.custom_query = customQuery;
-
-      const accepted = await fetchAPI<RecommendationGenerateAccepted>(
-        "/api/recommendations/generate",
-        { method: "POST", body: JSON.stringify(body) }
-      );
-
-      setGenerationProgress(accepted.progress);
-      setGenerationStage(accepted.stage);
-
-      let finalStatus: RecommendationJobStatus | null = null;
-      for (let i = 0; i < 180; i += 1) {
-        await sleep(1000);
-        const status = await fetchAPI<RecommendationJobStatus>(
-          `/api/recommendations/status/${accepted.job_id}`
-        );
-
-        setGenerationProgress(status.progress);
-        setGenerationStage(status.stage);
-
-        if (status.status === "succeeded" || status.status === "failed") {
-          finalStatus = status;
-          break;
-        }
-      }
-
-      if (!finalStatus) {
-        throw new Error("Recommendation generation timed out. Please try again.");
-      }
-
-      if (finalStatus.status === "failed") {
-        throw new Error(finalStatus.error || "Failed to generate recommendations");
-      }
-
-      const result = finalStatus.session_id
-        ? await fetchAPI<RecommendationResponse>(
-            `/api/recommendations/${finalStatus.session_id}`
-          )
-        : await fetchAPI<RecommendationResponse>("/api/recommendations");
-
-      setData(result);
-      setActiveSessionId(null);
-      toast.success("Recommendations generated successfully");
-
-      fetchAPI<HistoryResponse>("/api/recommendations/history")
-        .then((hist) => setHistory(hist.sessions))
-        .catch(() => {});
-    } catch (err) {
-      setError(
-        err instanceof Error
-          ? err.message
-          : "Failed to generate recommendations"
-      );
-    } finally {
-      setGenerating(false);
-    }
-  };
 
   // ── Load a specific past session ──────────────────
   const handleLoadSession = async (sessionId: string) => {
     setLoading(true);
     setError(null);
-
     try {
-      const result = await fetchAPI<RecommendationResponse>(
-        `/api/recommendations/${sessionId}`
-      );
+      const result = await fetchAPI<RecommendationResponse>(`/api/recommendations/${sessionId}`);
       setData(result);
       setActiveSessionId(sessionId);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Failed to load session"
-      );
+      setError(err instanceof Error ? err.message : "Failed to load session");
     } finally {
       setLoading(false);
     }
@@ -201,7 +96,6 @@ export default function RecommendationsPage() {
         body: JSON.stringify({ mal_id: malId, feedback }),
       });
       setFeedbackGiven((prev) => ({ ...prev, [malId]: feedback }));
-
       const labels: Record<string, string> = {
         liked: "Marked as interested",
         disliked: "Marked as not for you",
@@ -214,16 +108,7 @@ export default function RecommendationsPage() {
   };
 
   // ── Toggle watchlist ──────────────────────────────
-  const handleToggleWatchlist = async (rec: {
-    mal_id: number;
-    title: string;
-    image_url: string | null;
-    genres: string;
-    themes: string;
-    mal_score: number | null;
-    year: number | null;
-    anime_type: string | null;
-  }) => {
+  const handleToggleWatchlist = async (rec: RecommendationItem) => {
     const isOn = watchlistIds.has(rec.mal_id);
     try {
       if (isOn) {
@@ -267,7 +152,6 @@ export default function RecommendationsPage() {
               <Skeleton className="h-8 w-48" />
               <Skeleton className="mt-2 h-4 w-72" />
             </div>
-            <Skeleton className="h-9 w-40" />
           </div>
           <div className="grid gap-6 md:grid-cols-2">
             {Array.from({ length: 4 }).map((_, i) => (
@@ -300,17 +184,9 @@ export default function RecommendationsPage() {
             {/* Header */}
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
               <div>
-                <h1 className="text-3xl font-bold tracking-tight">
-                  Recommendations
-                </h1>
+                <h1 className="text-3xl font-bold tracking-tight">Recommendations</h1>
                 <p className="mt-1 text-sm text-muted-foreground">
-                  AI-powered anime picks based on your taste profile
-                  {hasFeedback && (
-                    <Badge variant="secondary" className="ml-2">
-                      <Sparkles className="mr-1 h-3 w-3" />
-                      Feedback incorporated
-                    </Badge>
-                  )}
+                  Your history of AI-generated picks
                 </p>
               </div>
 
@@ -325,33 +201,30 @@ export default function RecommendationsPage() {
                     History
                   </Button>
                 )}
-                <Button
-                  variant="outline"
-                  onClick={() => router.push("/dashboard")}
-                >
-                  <LayoutDashboard className="mr-2 h-4 w-4" />
-                  View Profile
-                </Button>
-                <Button
-                  onClick={() => handleGenerate()}
-                  disabled={generating}
-                >
-                  {generating ? (
-                    <span className="flex items-center gap-2">
-                      <RefreshCw className="h-4 w-4 animate-spin" />
-                      Generating…
-                    </span>
-                  ) : data ? (
-                    <>
-                      <RefreshCw className="mr-2 h-4 w-4" />
-                      {hasFeedback ? "Regenerate with Feedback" : "Regenerate"}
-                    </>
-                  ) : (
-                    <>
-                      <Sparkles className="mr-2 h-4 w-4" />
-                      Generate Recommendations
-                    </>
-                  )}
+                {/* View mode toggle */}
+                {data && (
+                  <div className="flex gap-1 rounded-lg border p-1">
+                    <Button
+                      variant={viewMode === "list" ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => setViewMode("list")}
+                      aria-label="List view"
+                    >
+                      <LayoutList className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      variant={viewMode === "cards" ? "secondary" : "ghost"}
+                      size="sm"
+                      onClick={() => setViewMode("cards")}
+                      aria-label="Card swipe view"
+                    >
+                      <Layers className="h-4 w-4" />
+                    </Button>
+                  </div>
+                )}
+                <Button onClick={() => router.push("/discover")}>
+                  <Sparkles className="mr-2 h-4 w-4" />
+                  New Session
                 </Button>
               </div>
             </div>
@@ -383,60 +256,34 @@ export default function RecommendationsPage() {
               <Alert>
                 <AlertTriangle className="h-4 w-4" />
                 <AlertDescription>
-                  AI reasoning was unavailable for some recommendations. Showing
-                  best matches from your taste profile.
+                  AI reasoning was unavailable for some recommendations. Showing best matches from
+                  your taste profile.
                 </AlertDescription>
               </Alert>
             )}
 
             {/* Empty state */}
-            {!data && !generating && (
+            {!data && (
               <Card className="py-20">
                 <CardContent className="flex flex-col items-center justify-center text-center">
                   <Compass className="h-16 w-16 text-muted-foreground/50" />
-                  <h2 className="mt-4 text-xl font-semibold">
-                    Ready for recommendations?
-                  </h2>
+                  <h2 className="mt-4 text-xl font-semibold">No recommendations yet</h2>
                   <p className="mt-2 max-w-md text-sm text-muted-foreground">
-                    Click &quot;Generate Recommendations&quot; to get
-                    personalised anime picks with AI-powered reasoning based on
-                    your MAL profile.
+                    Head to Discover to generate your first set of picks.
                   </p>
+                  <Button className="mt-6" onClick={() => router.push("/discover")}>
+                    <Sparkles className="mr-2 h-4 w-4" />
+                    Go to Discover
+                  </Button>
                 </CardContent>
               </Card>
             )}
 
-            {/* Generating state */}
-            {generating && (
-              <Card className="py-20">
-                <CardContent className="flex flex-col items-center justify-center text-center">
-                  <RefreshCw className="h-12 w-12 animate-spin text-primary" />
-                  <div className="mt-5 h-2 w-full max-w-md overflow-hidden rounded-full bg-muted">
-                    <div
-                      className="h-full bg-primary transition-all"
-                      style={{ width: `${generationProgress}%` }}
-                    />
-                  </div>
-                  <p className="mt-3 text-xs font-medium text-primary">
-                    {generationProgress}%
-                  </p>
-                  <p className="mt-4 text-sm text-muted-foreground">
-                    {stageLabel(generationStage)}…
-                  </p>
-                  <p className="mt-1 text-xs text-muted-foreground/70">
-                    {hasFeedback
-                      ? "Applying your feedback and finding new matches"
-                      : "Analysing your taste profile and finding matches"}
-                  </p>
-                </CardContent>
-              </Card>
-            )}
-
-            {/* Recommendation cards */}
-            {data && !generating && (
+            {/* Session results */}
+            {data && (
               <div className="space-y-6">
                 <p className="text-sm text-muted-foreground">
-                  {data.total} recommendations generated ·{" "}
+                  {data.total} recommendations ·{" "}
                   {new Date(data.generated_at).toLocaleString()}
                   {data.custom_query && (
                     <Badge variant="secondary" className="ml-2">
@@ -445,19 +292,29 @@ export default function RecommendationsPage() {
                   )}
                 </p>
 
-                <div className="grid gap-6 md:grid-cols-2">
-                  {data.recommendations.map((rec, index) => (
-                    <RecommendationCard
-                      key={rec.mal_id}
-                      rec={rec}
-                      index={index}
-                      feedback={feedbackGiven[rec.mal_id]}
-                      onFeedback={handleFeedback}
-                      isOnWatchlist={watchlistIds.has(rec.mal_id)}
-                      onToggleWatchlist={handleToggleWatchlist}
-                    />
-                  ))}
-                </div>
+                {viewMode === "list" ? (
+                  <div className="grid gap-6 md:grid-cols-2">
+                    {data.recommendations.map((rec, index) => (
+                      <RecommendationCard
+                        key={rec.mal_id}
+                        rec={rec}
+                        index={index}
+                        feedback={feedbackGiven[rec.mal_id]}
+                        onFeedback={handleFeedback}
+                        isOnWatchlist={watchlistIds.has(rec.mal_id)}
+                        onToggleWatchlist={handleToggleWatchlist}
+                      />
+                    ))}
+                  </div>
+                ) : (
+                  <SwipeCardDeck
+                    recommendations={data.recommendations}
+                    feedbackGiven={feedbackGiven}
+                    watchlistIds={watchlistIds}
+                    onFeedback={handleFeedback}
+                    onToggleWatchlist={handleToggleWatchlist}
+                  />
+                )}
               </div>
             )}
           </div>

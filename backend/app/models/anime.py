@@ -67,8 +67,14 @@ class AnimeList(Base):
         index=True,
     )
 
-    # ── MAL identity ─────────────────────────────────────
-    mal_username: Mapped[str] = mapped_column(String(255), index=True)
+    # ── Import source identity ────────────────────────────
+    source: Mapped[str] = mapped_column(
+        String(20), default="mal"
+    )  # mal | anilist — which source was most recently imported
+    mal_username: Mapped[str | None] = mapped_column(String(255), index=True, nullable=True)
+    anilist_username: Mapped[str | None] = mapped_column(
+        String(255), index=True, nullable=True
+    )
 
     # ── Sync metadata ────────────────────────────────────
     total_entries: Mapped[int] = mapped_column(Integer, default=0)
@@ -97,7 +103,8 @@ class AnimeList(Base):
     def __repr__(self) -> str:
         return (
             f"<AnimeList id={self.id!r} user_id={self.user_id!r} "
-            f"mal_username={self.mal_username!r} status={self.sync_status!r}>"
+            f"source={self.source!r} mal_username={self.mal_username!r} "
+            f"anilist_username={self.anilist_username!r} status={self.sync_status!r}>"
         )
 
 

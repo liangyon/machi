@@ -47,10 +47,11 @@ class MALSyncStatus(BaseModel):
     """GET /api/mal/status — check import progress."""
 
     anime_list_id: str
-    mal_username: str
+    mal_username: str | None
     sync_status: str  # pending | in_progress | completed | failed
     total_entries: int
     last_synced_at: datetime | None
+    source: str = "mal"  # which source the current AnimeList row belongs to
 
 
 # ── Anime Entry (for list display) ──────────────────────
@@ -124,3 +125,42 @@ class PreferenceProfileResponse(BaseModel):
     top_10: list[AnimeEntryResponse]
     watch_era_preference: dict[str, int]  # {"2020s": 40, "2010s": 60}
     generated_at: datetime
+    # ── Import source metadata ────────────────────────
+    source: str | None = None  # "mal" | "anilist"
+    imported_username: str | None = None  # the username used for the import
+
+
+# ── AniList Import ────────────────────────────────────────
+
+
+class AniListImportRequest(BaseModel):
+    """POST /api/anilist/import — kick off an AniList list import."""
+
+    anilist_username: str = Field(
+        ...,
+        min_length=1,
+        max_length=255,
+        description="The AniList username to import.",
+        examples=["Username"],
+    )
+
+
+class AniListImportResponse(BaseModel):
+    """Response after starting an AniList import."""
+
+    anime_list_id: str
+    anilist_username: str
+    sync_status: str
+    message: str
+
+
+class AniListSyncStatus(BaseModel):
+    """GET /api/anilist/status — check AniList import progress."""
+
+    anime_list_id: str
+    anilist_username: str | None
+    sync_status: str  # pending | in_progress | completed | failed
+    total_entries: int
+    skipped_no_mal_id: int  # entries skipped because idMal was null
+    last_synced_at: datetime | None
+    source: str = "anilist"  # always "anilist" for this endpoint

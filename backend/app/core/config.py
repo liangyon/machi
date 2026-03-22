@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     RECOMMEND_MAX_ITEMS_PER_REQUEST: int = 10
     RECOMMEND_MAX_CUSTOM_QUERY_CHARS: int = 300
     RECOMMEND_JOB_TIMEOUT_SECONDS: int = 45
-    LLM_MAX_INPUT_CHARS: int = 12000
+    LLM_MAX_INPUT_CHARS: int = 32000
     LLM_MAX_OUTPUT_TOKENS: int = 2000
     # Approximate guardrail to avoid runaway per-request spend.
     LLM_MAX_ESTIMATED_COST_USD: float = Field(default=0.03, ge=0.0)

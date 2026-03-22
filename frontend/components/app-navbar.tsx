@@ -10,6 +10,7 @@ import {
   Menu,
   LogOut,
   User,
+  Compass,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -35,6 +36,11 @@ const navItems = [
     label: "Dashboard",
     href: "/dashboard",
     icon: LayoutDashboard,
+  },
+  {
+    label: "Discover",
+    href: "/discover",
+    icon: Compass,
   },
   {
     label: "Recommendations",

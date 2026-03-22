@@ -74,8 +74,9 @@ async def import_mal_list(
     ).scalar_one_or_none()
 
     if anime_list:
-        # Reset for re-import: clear old entries, update username
+        # Reset for re-import: clear old entries, update username + source
         anime_list.mal_username = mal_username
+        anime_list.source = "mal"
         anime_list.sync_status = "pending"
         anime_list.total_entries = 0
         # Delete old entries (cascade would handle this, but explicit is clearer)
@@ -88,6 +89,7 @@ async def import_mal_list(
         anime_list = AnimeList(
             user_id=user.id,
             mal_username=mal_username,
+            source="mal",
             sync_status="pending",
         )
         db.add(anime_list)
@@ -133,10 +135,11 @@ def get_sync_status(
 
     return MALSyncStatus(
         anime_list_id=anime_list.id,
-        mal_username=anime_list.mal_username,
+        mal_username=anime_list.mal_username or "",
         sync_status=anime_list.sync_status,
         total_entries=anime_list.total_entries,
         last_synced_at=anime_list.last_synced_at,
+        source=anime_list.source,
     )
 
 
@@ -193,8 +196,26 @@ def get_preference_profile(
             detail="No preference profile found. Import your MAL list first.",
         )
 
+    # Look up the anime list to get source + username for the badge
+    anime_list = db.execute(
+        select(AnimeList).where(AnimeList.user_id == user.id)
+    ).scalar_one_or_none()
+
+    source = None
+    imported_username = None
+    if anime_list:
+        source = anime_list.source
+        if anime_list.source == "anilist":
+            imported_username = anime_list.anilist_username
+        else:
+            imported_username = anime_list.mal_username
+
     # The profile_data JSON blob matches PreferenceProfileResponse
-    return PreferenceProfileResponse(**profile.profile_data)
+    return PreferenceProfileResponse(
+        **profile.profile_data,
+        source=source,
+        imported_username=imported_username,
+    )
 
 
 # ── Background import task ───────────────────────────────

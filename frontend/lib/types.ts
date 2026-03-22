@@ -24,10 +24,28 @@ export interface AnimeEntry {
 
 export interface MALSyncStatus {
   anime_list_id?: string;
-  mal_username: string;
+  mal_username: string | null;
   sync_status: string; // pending | in_progress | completed | failed
   total_entries: number;
   last_synced_at?: string | null;
+  source?: string; // "mal" | "anilist" — actual source of the current list
+}
+
+export interface AniListImportResponse {
+  anime_list_id: string;
+  anilist_username: string;
+  sync_status: string;
+  message: string;
+}
+
+export interface AniListSyncStatus {
+  anime_list_id?: string;
+  anilist_username: string | null;
+  sync_status: string; // pending | in_progress | completed | failed
+  total_entries: number;
+  skipped_no_mal_id: number;
+  last_synced_at?: string | null;
+  source?: string; // always "anilist"
 }
 
 // ── Recommendations ─────────────────────────────────
@@ -148,6 +166,35 @@ export interface PreferenceProfile {
   top_10: AnimeEntry[];
   watch_era_preference: Record<string, number>;
   generated_at: string;
+  source?: string | null; // "mal" | "anilist"
+  imported_username?: string | null;
+}
+
+// ── Cauldron ─────────────────────────────────────────
+
+export interface CauldronSearchResult {
+  mal_id: number;
+  title: string;
+  title_english: string | null;
+  image_url: string | null;
+  year: number | null;
+  anime_type: string | null;
+  genres: string | null;
+  mal_score: number | null;
+}
+
+export interface CauldronSearchResponse {
+  results: CauldronSearchResult[];
+  total: number;
+}
+
+export interface CauldronResultsResponse {
+  session_id: string;
+  seed_titles: string[];
+  recommendations: RecommendationItem[];
+  generated_at: string;
+  total: number;
+  used_fallback: boolean;
 }
 
 // ── MAL Import ──────────────────────────────────────

@@ -270,7 +270,7 @@ def generate_recommendations(
     # This guarantees the user ALWAYS gets recommendations,
     # even if the LLM is having a bad day.
 
-    recommendations = _call_llm_with_retry(
+    recommendations = call_llm_with_retry(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
         candidates=candidates,
@@ -608,7 +608,7 @@ def parse_recommendations(
 MAX_LLM_RETRIES = 2
 
 
-def _call_llm_with_retry(
+def call_llm_with_retry(
     system_prompt: str,
     user_prompt: str,
     candidates: list[dict],
@@ -911,7 +911,7 @@ def _format_candidates(candidates: list[dict]) -> str:
 
         # Truncate the embedding text for the synopsis
         synopsis = _truncate(
-            candidate.get("embedding_text", ""), max_length=200
+            candidate.get("embedding_text", ""), max_length=120
         )
 
         # IMPORTANT: We lead with "mal_id: NNNNN" on its own line

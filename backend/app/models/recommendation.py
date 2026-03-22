@@ -101,6 +101,14 @@ class RecommendationSession(Base):
         Integer, default=0
     )  # how many recommendations were generated
 
+    # ── Cauldron (seed-based vibe-matching) ─────────────
+    mode: Mapped[str] = mapped_column(
+        String(20), default="standard"
+    )  # "standard" | "cauldron"
+    cauldron_seed_ids: Mapped[list | None] = mapped_column(
+        JSON, nullable=True, default=None
+    )  # list of seed MAL IDs for cauldron sessions; None for standard sessions
+
     # ── Timestamps ───────────────────────────────────────
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -116,7 +124,7 @@ class RecommendationSession(Base):
     def __repr__(self) -> str:
         return (
             f"<RecommendationSession id={self.id!r} user_id={self.user_id!r} "
-            f"total={self.total_count} query={self.custom_query!r}>"
+            f"mode={self.mode!r} total={self.total_count} query={self.custom_query!r}>"
         )
 
 

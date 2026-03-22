@@ -267,6 +267,248 @@ This is the difference between a static tool and a learning recommendation engin
 
 ---
 
+## Phase 6: New Features — AniList, Cauldron, Shareable Palate Card
+
+---
+
+### Feature 6A: AniList Integration
+
+**Goal**: Full AniList support as a first-class import source alongside MAL, with zero impact on the existing recommendation pipeline.
+
+#### Why AniList Works Well Here
+AniList's GraphQL API returns `idMal` on every media entry — the MAL ID. This means AniList entries can be normalized into the same `AnimeEntry` rows the rest of the system already uses. The vector store, RAG retriever, preference analyzer, and recommendation engine don't need to change at all. Only the ingestion layer is new.
+
+#### Backend
+
+1. **`app/services/anilist.py`** — AniList GraphQL Client
+   - Endpoint: `https://graphql.anilist.co` (free, no auth for public lists)
+   - Single GraphQL query fetches full user list with media metadata:
+     ```graphql
+     query ($username: String) {
+       MediaListCollection(userName: $username, type: ANIME) {
+         lists {
+           entries {
+             score(format: POINT_10_DECIMAL)
+             status
+             media {
+               idMal
+               title { romaji english }
+               genres
+               description
+               averageScore
+               startDate { year }
+               studios { nodes { name } }
+               tags { name rank }
+               coverImage { large }
+             }
+           }
+         }
+       }
+     }
+     ```
+   - Map AniList statuses → MAL statuses (`COMPLETED → completed`, `CURRENT → watching`, `PLANNING → plan_to_watch`, `DROPPED → dropped`, `PAUSED → on_hold`)
+   - Skip entries where `idMal` is null (AniList-exclusive titles with no MAL ID) — log and count skips
+   - Rate-limit aware (AniList: 90 req/min)
+
+2. **`app/models/anime.py`** — Schema Extension
+   - Add `source` column to `AnimeList` (`mal` | `anilist`, default `mal`)
+   - Add `anilist_username` nullable column to `AnimeList`
+   - No changes to `AnimeEntry` — `mal_id` stays the universal key
+
+3. **`app/api/anilist.py`** — New Router
+   - `POST /api/anilist/import` — accepts `{ anilist_username }`, fetches and stores list, triggers preference analysis
+   - `GET /api/anilist/status` — same job-polling contract as `/mal/status`
+   - Register under central router as `/api/anilist`
+
+4. **Migration** — Add `source` + `anilist_username` to `anime_lists` table
+
+#### Frontend
+
+5. **Import Page** — Add AniList import card alongside the existing MAL card
+   - Same UX: username input, import button, progress bar, success state
+   - Show AniList logo/branding on the card
+
+6. **Dashboard** — Show `source` badge on the imported list section (`MyAnimeList` vs `AniList`)
+
+#### Compatibility Checklist
+- Preference analyzer: no changes (reads `AnimeEntry` rows, source-agnostic)
+- RAG retriever: no changes (uses `mal_id` for filtering)
+- Vector store: no changes (keyed on `mal_id`)
+- Recommendation engine: no changes
+- Watchlist: no changes (watchlist entries use `mal_id`)
+- Feedback: no changes
+
+#### Edge Cases
+- User imports AniList and then tries to import MAL (or vice versa): allow both, merge entries by `mal_id` (update existing row on conflict)
+- AniList entry has no `idMal`: skip silently, include count in import response (`skipped_no_mal_id: N`)
+- AniList score of 0 = unscored, same as MAL's 0 — exclude from avg-score computation but include in frequency
+
+---
+
+### Feature 6B: Cauldron
+
+**Goal**: A second recommendation mode where users pick 1–3 "seed" shows and get 5 recommendations that scratch the exact same itch — no profile required.
+
+#### Concept
+The Cauldron is vibe-matching. You don't need a full MAL/AniList import. You say "I want more of what made *Vinland Saga*, *Berserk*, and *Kingdom* feel so good" and it finds 5 shows with that exact DNA. The LLM is given the seeds' metadata and tasked with reasoning about what makes them tick, then hunting for matches.
+
+#### Backend
+
+1. **`app/services/cauldron.py`** — Core Logic
+   - `generate_cauldron_recs(seed_mal_ids: list[int], user_id: int | None) → list[Recommendation]`
+   - Step 1: Fetch seed metadata from `anime_catalog` table (already have it) or Jikan if missing
+   - Step 2: Build a "blend profile" from seeds:
+     - Union of genres/themes with frequency weighting
+     - Composite description: "Show 1 is known for X, Show 2 for Y..."
+   - Step 3: Multi-query RAG retrieval using seed titles + genre blend
+     - Exclude the seed shows themselves from results
+     - Optionally exclude user's watched list if `user_id` provided
+   - Step 4: LLM prompt explaining the seeds and asking for 5 recommendations from the retrieved candidates
+     - Prompt instructs: "Explain which aspect of the seeds each pick captures"
+   - Step 5: Parse and return (same schema as regular recommendations — `RecommendationEntry`)
+
+2. **`app/api/cauldron.py`** — Router
+   - `POST /api/cauldron/generate`
+     - Body: `{ seed_ids: [mal_id, ...], user_id?: int }` (1–3 seeds, validated)
+     - Returns: job_id for async polling (same pattern as `/recommendations/generate`)
+   - `GET /api/cauldron/status/{job_id}` — standard polling endpoint
+   - `GET /api/cauldron/search?q=...` — anime title search to help users find seeds
+     - Searches `anime_catalog` table by title (ILIKE), returns top 10 matches with cover art
+
+3. **`app/api/cauldron.py`** — Anime Search (for Seed Picker)
+   - `GET /api/cauldron/search?q={query}` — simple title search against `anime_catalog`
+   - Returns: `[ { mal_id, title, image_url, year, genres[] } ]`
+   - If catalog doesn't have the anime: fallback to Jikan search
+
+4. **Persistence** — Cauldron results saved into `RecommendationSession` with a `mode: "cauldron"` field and `seed_ids` in the session metadata. Reuses the same `RecommendationEntry` table.
+   - Add `mode` (`standard` | `cauldron`) and `cauldron_seed_ids` (JSON array) to `RecommendationSession`
+   - Migration required
+
+#### Frontend
+
+5. **`/cauldron` Page** — New protected route under `(app)/`
+   - Layout: a centered "cauldron" metaphor UI (the name should feel a little witchy/alchemical)
+   - **Seed Picker**: searchable anime picker, max 3 slots shown as cards with cover art
+     - Inline search (debounced, hits `/api/cauldron/search`)
+     - Each slot shows the selected show's cover + title with an X to remove
+   - **"Brew" button**: disabled until ≥1 seed selected; triggers generation
+   - **Progress bar**: same polling UX as the main recommendations page
+   - **Results**: 5 recommendation cards, same `RecommendationCard` component as main recs
+     - Each card's reasoning should reference which seed it connects to
+   - No MAL/AniList import required — fully standalone feature
+
+6. **Navbar** — Add "Cauldron" link to the navigation
+
+#### Prompt Design Notes
+- Seeds are provided in full (title, genres, synopsis excerpt, themes)
+- Candidates are provided as the pool to pick from
+- Prompt asks the LLM to name what "essence" each seed has (e.g., "slow-burn political intrigue", "brutal coming-of-age") before picking recommendations
+- This forces the LLM to reason about the blend, not just genre-match
+
+---
+
+### Feature 6C: Shareable Palate Card
+
+**Goal**: A beautiful, shareable image card that roasts the user's taste while flattering it — a snapshot of their anime identity with personality.
+
+#### Card Contents
+| Section | Content |
+|---|---|
+| **Top Genres** | 3–5 genre badges sized by affinity score |
+| **Favorite Era** | Which decade they watch most (e.g., "2010s maximalist") |
+| **Dark Horse** | Highest user-rated show with community score < 7.5 (MAL avg) — "You gave X a 10. The internet gave it a 7.3. Taste." |
+| **Archetype Title** | LLM-generated label: e.g., *"The Contrarian"*, *"Shonen Tourist"*, *"Certified Art Film Goblin"* |
+| **Taste Traits** | 3–4 short trait chips: e.g., "completes everything", "underdog enjoyer", "skips slice-of-life" |
+| **One-liner** | LLM-generated smug/funny line about their taste. Mean but loving. |
+| **Source Badge** | Small MAL or AniList logo + username |
+
+#### Backend
+
+1. **`app/services/palate_card.py`** — Analysis + Generation
+   - `generate_palate_card(user_id: int) → PalateCardData`
+   - Reads from existing `UserPreferenceProfile` (already computed)
+   - Additional computations (pure, over the user's `AnimeEntry` rows):
+     - **Era**: group entries by `start_year // 10 * 10`, find peak decade
+     - **Dark horse**: filter entries where `user_score >= 9` and `community_score < 7.5`, pick highest user-scored
+     - **Taste traits**: rule-based from profile data:
+       - Completion rate > 85% → "completes everything"
+       - Score variance high → "harsh rater"
+       - Avg score > 8 → "generous scorer"
+       - Top genre is niche (Psychological, Seinen, etc.) → "certified taste"
+       - Many entries with 0 score → "watches without judging"
+   - LLM call (single, cheap) for archetype + one-liner:
+     - Input: top genres, era, dark horse title, 3 taste traits, completion rate, avg score
+     - Output: `{ archetype: str, one_liner: str }` — JSON response
+     - Temperature: 0.9 (for personality)
+     - Max tokens: 100 (cheap — this is a tiny prompt)
+
+2. **`app/api/profile.py`** — New or Extended Router
+   - `GET /api/profile/palate-card` — generate + return `PalateCardData`
+   - Cache result per user with 1h TTL (palate doesn't change fast; LLM call cost)
+   - Response schema:
+     ```json
+     {
+       "username": "...",
+       "source": "mal" | "anilist",
+       "top_genres": [{ "name": "...", "affinity": 0.87 }],
+       "favorite_era": "2010s",
+       "dark_horse": { "title": "...", "user_score": 10, "community_score": 7.1 },
+       "archetype": "The Contrarian",
+       "taste_traits": ["completes everything", "harsh rater"],
+       "one_liner": "You've seen 300 shows and somehow still think popular = bad.",
+       "entry_count": 312,
+       "avg_score": 7.4
+     }
+     ```
+
+#### Frontend
+
+3. **`/palate` Page** — New protected route under `(app)/`
+   - Renders the card from the API response
+   - Card is a styled `div` (not canvas) — designed to be screenshot-able or export as PNG
+   - **Export as PNG**: use `html2canvas` (or `dom-to-image-more`) to capture the card `div`
+   - **Share flow**: download PNG → user posts to socials manually (no third-party API needed)
+   - Loading state: show skeleton card while generating
+   - "Regenerate" button (clears cache on backend, forces fresh LLM call)
+
+4. **Card Visual Design**
+   - Dark card (works well for social sharing)
+   - Large archetype title as the hero text
+   - Genre bars or bubbles
+   - One-liner in italic, slightly smaller
+   - Machi branding in corner
+   - Clean, no clutter — meant to be a screenshot
+
+5. **Navbar** — Add "Palate" link to navigation (or nest under user dropdown as "My Palate Card")
+
+#### Archetype & One-liner Prompt Notes
+Sample LLM prompt structure:
+```
+You are a smug anime critic writing a funny, roast-style taste label for a user.
+Top genres: Action, Psychological, Thriller
+Favorite era: 2000s
+Dark horse: Serial Experiments Lain (they rated it 10, avg is 6.8)
+Traits: completes everything, harsh rater, niche taste
+
+Give them:
+- An archetype title (2–4 words, creative, slightly mean)
+- A one-liner (under 20 words, smug but fond, like a friend roasting you)
+
+Respond in JSON: { "archetype": "...", "one_liner": "..." }
+```
+
+---
+
+### Implementation Order
+
+| Priority | Feature | Effort | Notes |
+|---|---|---|---|
+| 1 | AniList Integration | Medium | Unlocks more users; zero risk to existing pipeline |
+| 2 | Palate Card | Medium | High shareability/viral potential; mostly reads from existing data |
+| 3 | Cauldron | High | New recommendation surface; requires search UI + new prompt design |
+
+---
+
 ## Cost Estimates
 
 ### Development
