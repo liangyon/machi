@@ -130,7 +130,7 @@ export default function WatchlistPage() {
                 : `${items.length} anime saved`}
             </p>
           </div>
-          <Button onClick={() => router.push("/recommendations")}>
+          <Button onClick={() => router.push("/discover")}>
             <Sparkles className="mr-2 h-4 w-4" />
             Get Recommendations
           </Button>
@@ -172,7 +172,7 @@ export default function WatchlistPage() {
             description='Use the bookmark button on recommendations to save anime you want to watch. Your watchlist is separate from the feedback system — saving here won&apos;t affect your recommendations.'
             actionLabel="Browse Recommendations"
             actionIcon={Sparkles}
-            onAction={() => router.push("/recommendations")}
+            onAction={() => router.push("/discover")}
           />
         )}
 

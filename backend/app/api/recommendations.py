@@ -39,13 +39,13 @@ Endpoint design
   can show which recs they already rated (survives page reload).
 """
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from time import perf_counter
 from threading import Lock
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
-from sqlalchemy import select
+from sqlalchemy import distinct, select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, get_db
@@ -585,6 +585,24 @@ def _get_feedback_exclude_ids(user_id: str, db: Session) -> set[int]:
     return set(feedback_ids)
 
 
+def _get_recently_recommended_ids(user_id: str, db: Session, days: int = 30) -> set[int]:
+    """Get MAL IDs that were recommended in the last `days` days.
+
+    Excludes these from new generations so users always get fresh picks
+    rather than the same anime repeatedly appearing across sessions.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    ids = db.execute(
+        select(distinct(RecommendationEntry.mal_id))
+        .join(RecommendationSession, RecommendationEntry.session_id == RecommendationSession.id)
+        .where(
+            RecommendationSession.user_id == user_id,
+            RecommendationSession.generated_at >= cutoff,
+        )
+    ).scalars().all()
+    return set(ids)
+
+
 def _set_job(job_id: str, payload: dict) -> None:
     with _generation_jobs_lock:
         _generation_jobs[job_id] = payload
@@ -641,7 +659,8 @@ def _run_generation_job(
         _update_job(job_id, progress=45, stage="retrieving_candidates")
         watched_mal_ids = _get_watched_mal_ids(user_id, db)
         feedback_exclude_ids = _get_feedback_exclude_ids(user_id, db)
-        all_exclude_ids = watched_mal_ids | feedback_exclude_ids
+        recently_recommended_ids = _get_recently_recommended_ids(user_id, db, days=30)
+        all_exclude_ids = watched_mal_ids | feedback_exclude_ids | recently_recommended_ids
 
         _update_job(job_id, progress=75, stage="generating_recommendations")
         raw_recommendations = generate_recommendations(

@@ -22,6 +22,7 @@ import {
   Search,
   X,
   User,
+  Clock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -30,6 +31,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Input } from "@/components/ui/input";
 import { AnimeCover } from "@/components/shared/anime-cover";
 import { SwipeCardDeck } from "@/components/recommendations/swipe-card";
+import { HistoryTab } from "@/components/discover/history-tab";
 import { useJobPoller } from "@/lib/hooks/useJobPoller";
 import type {
   RecommendationResponse,
@@ -69,7 +71,7 @@ const CAULDRON_STAGE_LABELS: Record<string, string> = {
 const MAX_SEEDS = 3;
 const SEARCH_DEBOUNCE_MS = 300;
 
-type Tab = "profile" | "cauldron";
+type Tab = "profile" | "cauldron" | "history";
 
 export default function DiscoverPage() {
   const { user } = useAuth();
@@ -321,7 +323,7 @@ export default function DiscoverPage() {
   // ── Render ────────────────────────────────────────
   return (
     <div className="px-4 py-8">
-      <div className="mx-auto max-w-2xl space-y-8">
+      <div className={`mx-auto space-y-8 ${activeTab === "history" ? "max-w-7xl" : "max-w-2xl"}`}>
 
         {/* Page header */}
         <div>
@@ -353,6 +355,15 @@ export default function DiscoverPage() {
           >
             <FlaskConical className="h-4 w-4" />
             Brew
+          </Button>
+          <Button
+            variant={activeTab === "history" ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => setActiveTab("history")}
+            className="gap-2"
+          >
+            <Clock className="h-4 w-4" />
+            History
           </Button>
         </div>
 
@@ -661,6 +672,17 @@ export default function DiscoverPage() {
               </div>
             )}
           </div>
+        )}
+
+        {/* ── History tab ── */}
+        {activeTab === "history" && (
+          <HistoryTab
+            watchlistIds={watchlistIds}
+            feedbackGiven={feedbackGiven}
+            onFeedback={handleFeedback}
+            onToggleWatchlist={handleToggleWatchlist}
+            onSetWatchlistIds={setWatchlistIds}
+          />
         )}
 
       </div>

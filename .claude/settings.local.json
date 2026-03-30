@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(app\\)/\")",
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(auth\\)/\")",
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(app\\)/dashboard/\")",
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(app\\)/discover/\")",
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(app\\)/recommendations/\")",
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(app\\)/taste-card/\")",
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(app\\)/import/\")",
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(app\\)/watchlist/\")",
+      "Bash(ls \"c:/Users/Brandon Liang/OneDrive - University of Toronto/Desktop/Machi/machi/frontend/app/\\(app\\)/cauldron/\")"
+    ]
+  }
+}

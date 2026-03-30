@@ -3,15 +3,11 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
-  LayoutDashboard,
-  Sparkles,
-  Download,
   Bookmark,
+  Compass,
   Menu,
   LogOut,
   User,
-  Compass,
-  IdCard,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -34,34 +30,19 @@ import { ThemeToggle } from "@/components/theme-toggle";
 
 const navItems = [
   {
-    label: "Dashboard",
-    href: "/dashboard",
-    icon: LayoutDashboard,
-  },
-  {
     label: "Discover",
     href: "/discover",
     icon: Compass,
   },
   {
-    label: "Taste Card",
-    href: "/taste-card",
-    icon: IdCard,
-  },
-  {
-    label: "Recommendations",
-    href: "/recommendations",
-    icon: Sparkles,
-  },
-  {
-    label: "Import",
-    href: "/import",
-    icon: Download,
-  },
-  {
     label: "Watchlist",
     href: "/watchlist",
     icon: Bookmark,
+  },
+  {
+    label: "Profile",
+    href: "/profile",
+    icon: User,
   },
 ];
 
@@ -120,6 +101,18 @@ export function AppNavbar() {
                   <p className="text-sm font-medium">{user.name || "User"}</p>
                   <p className="text-xs text-muted-foreground">{user.email}</p>
                 </div>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link href="/profile">
+                    <User className="mr-2 h-4 w-4" />
+                    Profile
+                  </Link>
+                </DropdownMenuItem>
+                <DropdownMenuItem asChild>
+                  <Link href="/profile?tab=import">
+                    Import List
+                  </Link>
+                </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={logout}>
                   <LogOut className="mr-2 h-4 w-4" />
