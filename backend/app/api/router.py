@@ -9,6 +9,7 @@ from app.api.demo import router as demo_router
 from app.api.health import router as health_router
 from app.api.mal import router as mal_router
 from app.api.recommendations import router as recommendations_router
+from app.api.taste_card import router as taste_card_router
 from app.api.watchlist import router as watchlist_router
 
 api_router = APIRouter()
@@ -21,3 +22,4 @@ api_router.include_router(anilist_router)
 api_router.include_router(recommendations_router)
 api_router.include_router(cauldron_router)
 api_router.include_router(watchlist_router)
+api_router.include_router(taste_card_router)

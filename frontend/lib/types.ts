@@ -197,6 +197,33 @@ export interface CauldronResultsResponse {
   used_fallback: boolean;
 }
 
+// ── Taste Card ───────────────────────────────────────
+
+export interface DarkHorsePick {
+  mal_anime_id: number;
+  title: string;
+  image_url: string | null;
+  user_score: number;
+  mal_score: number | null;
+  genres: string | null;
+}
+
+export interface TasteCard {
+  archetype: string;
+  roast: string;
+  vibe: string | null;
+  reasoning: string;
+  top_genres: string[];
+  favorite_era: string;
+  dark_horse: DarkHorsePick | null;
+  taste_traits: string[];
+  entry_count: number;
+  avg_score: number;
+  source: string | null;
+  imported_username: string | null;
+  generated_at: string;
+}
+
 // ── MAL Import ──────────────────────────────────────
 
 export interface MALImportResponse {

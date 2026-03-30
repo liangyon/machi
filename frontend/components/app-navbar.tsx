@@ -11,6 +11,7 @@ import {
   LogOut,
   User,
   Compass,
+  IdCard,
 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -41,6 +42,11 @@ const navItems = [
     label: "Discover",
     href: "/discover",
     icon: Compass,
+  },
+  {
+    label: "Taste Card",
+    href: "/taste-card",
+    icon: IdCard,
   },
   {
     label: "Recommendations",
