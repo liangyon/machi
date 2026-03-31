@@ -259,8 +259,8 @@ def _embed_unembedded_entries():
     """Embed all catalog entries that haven't been embedded yet.
 
     Reads from the AnimeCatalogEntry table, filters for
-    ``is_embedded=False``, and pushes them to the vector store.
-    Then marks them as embedded in the DB.
+    ``is_embedded=False``, and pushes them to the vector store in chunks.
+    Commits progress per chunk so crashes don't lose work.
     """
     from sqlalchemy import select
     from app.db.session import SessionLocal
@@ -287,31 +287,39 @@ def _embed_unembedded_entries():
 
         print(f"🧠 Embedding {len(entries)} anime into vector store...")
 
-        # Convert ORM objects to dicts for the vector store
-        entry_dicts = [
-            {
-                "mal_id": e.mal_id,
-                "title": e.title,
-                "image_url": e.image_url,
-                "embedding_text": e.embedding_text,
-                "genres": e.genres,
-                "themes": e.themes,
-                "anime_type": e.anime_type,
-                "year": e.year,
-                "mal_score": e.mal_score,
-                "mal_members": e.mal_members,
-            }
-            for e in entries
-        ]
+        # Process in chunks and commit progress after each chunk so that
+        # a crash mid-run doesn't lose all progress.
+        chunk_size = 500
+        total_added = 0
+        for i in range(0, len(entries), chunk_size):
+            chunk = entries[i : i + chunk_size]
 
-        added = add_anime_to_store(entry_dicts)
-        print(f"   ✅ Embedded {added} anime into vector store")
+            entry_dicts = [
+                {
+                    "mal_id": e.mal_id,
+                    "title": e.title,
+                    "image_url": e.image_url,
+                    "embedding_text": e.embedding_text,
+                    "genres": e.genres,
+                    "themes": e.themes,
+                    "anime_type": e.anime_type,
+                    "year": e.year,
+                    "mal_score": e.mal_score,
+                    "mal_members": e.mal_members,
+                }
+                for e in chunk
+            ]
 
-        # Mark as embedded in the DB
-        for entry in entries:
-            entry.is_embedded = True
-        db.commit()
-        print(f"   ✅ Marked {len(entries)} entries as embedded in DB")
+            added = add_anime_to_store(entry_dicts)
+            total_added += added
+
+            # Commit this chunk's progress immediately
+            for entry in chunk:
+                entry.is_embedded = True
+            db.commit()
+            print(f"   Progress: {min(i + chunk_size, len(entries))}/{len(entries)} embedded")
+
+        print(f"   ✅ Embedded {total_added} anime into vector store")
 
     finally:
         db.close()

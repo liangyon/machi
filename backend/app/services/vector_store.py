@@ -226,12 +226,19 @@ def add_anime_to_store(
         if not texts:
             continue
 
-        # Add to ChromaDB (this calls OpenAI embeddings API)
-        store.add_texts(
-            texts=texts,
-            metadatas=metadatas,
-            ids=ids,
-        )
+        # Embed with retry on OpenAI rate limit errors
+        import time
+        for attempt in range(5):
+            try:
+                store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
+                break
+            except Exception as e:
+                if "rate_limit" in str(e).lower() or "429" in str(e):
+                    wait = 60 * (attempt + 1)
+                    logger.warning("Rate limited, waiting %ds (attempt %d/5)", wait, attempt + 1)
+                    time.sleep(wait)
+                else:
+                    raise
 
         total_added += len(texts)
         logger.info(
