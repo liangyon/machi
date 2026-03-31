@@ -71,12 +71,8 @@ export default function Home() {
         <div className="mx-auto flex h-14 max-w-7xl items-center justify-between px-4 sm:px-6">
           <span className="text-lg font-bold tracking-tight">Machi</span>
           <div className="flex gap-2">
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/login">Sign In</Link>
-            </Button>
-            <Button size="sm" asChild>
-              <Link href="/register">Get Started</Link>
-            </Button>
+            <Button variant="ghost" size="sm" render={<Link href="/login" />}>Sign In</Button>
+            <Button size="sm" render={<Link href="/register" />}>Get Started</Button>
           </div>
         </div>
       </header>
@@ -92,15 +88,11 @@ export default function Home() {
             with real AI reasoning — not just generic top-10 lists.
           </p>
           <div className="mt-10 flex gap-3">
-            <Button size="lg" asChild>
-              <Link href="/register">
-                Get Started Free
-                <ArrowRight className="ml-2 h-4 w-4" />
-              </Link>
+            <Button size="lg" render={<Link href="/register" />}>
+              Get Started Free
+              <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
-            <Button size="lg" variant="outline" asChild>
-              <Link href="/login">Sign In</Link>
-            </Button>
+            <Button size="lg" variant="outline" render={<Link href="/login" />}>Sign In</Button>
           </div>
         </section>
 
@@ -139,11 +131,9 @@ export default function Home() {
           <p className="mt-3 text-sm text-muted-foreground">
             Free to use. No credit card required.
           </p>
-          <Button size="lg" className="mt-6" asChild>
-            <Link href="/register">
-              Create Free Account
-              <ArrowRight className="ml-2 h-4 w-4" />
-            </Link>
+          <Button size="lg" className="mt-6" render={<Link href="/register" />}>
+            Create Free Account
+            <ArrowRight className="ml-2 h-4 w-4" />
           </Button>
         </section>
       </main>

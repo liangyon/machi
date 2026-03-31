@@ -102,16 +102,12 @@ export function AppNavbar() {
                   <p className="text-xs text-muted-foreground">{user.email}</p>
                 </div>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <Link href="/profile">
-                    <User className="mr-2 h-4 w-4" />
-                    Profile
-                  </Link>
+                <DropdownMenuItem render={<Link href="/profile" />}>
+                  <User className="mr-2 h-4 w-4" />
+                  Profile
                 </DropdownMenuItem>
-                <DropdownMenuItem asChild>
-                  <Link href="/profile?tab=import">
-                    Import List
-                  </Link>
+                <DropdownMenuItem render={<Link href="/profile?tab=import" />}>
+                  Import List
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem onClick={logout}>
