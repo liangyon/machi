@@ -47,8 +47,8 @@ EXPOSE ${PORT}
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen(f'http://localhost:{__import__(\"os\").environ.get(\"PORT\", 8000)}/api/health')" || exit 1
 
-# Run with uvicorn — use the venv Python
-CMD uv run uvicorn app.main:app \
+# Run with uvicorn — use the venv Python directly (uv not needed at runtime)
+CMD /app/.venv/bin/python -m uvicorn app.main:app \
     --host 0.0.0.0 \
     --port ${PORT} \
     --workers 1 \
