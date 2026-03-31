@@ -67,11 +67,12 @@ class Settings(BaseSettings):
     # Approximate guardrail to avoid runaway per-request spend.
     LLM_MAX_ESTIMATED_COST_USD: float = Field(default=0.03, ge=0.0)
 
-    # ── Vector Store (ChromaDB) ──────────────────────────
-    # Where ChromaDB persists its data on disk.
-    # In production this would be replaced by pgvector.
+    # ── Vector Store ─────────────────────────────────────
+    # ChromaDB is used locally (SQLite/dev); pgvector is used in production
+    # (PostgreSQL/Neon). The backend auto-selects based on DATABASE_URL.
     CHROMA_PERSIST_DIR: str = "./chroma_data"
     CHROMA_COLLECTION_NAME: str = "anime_catalog"
+    VECTOR_COLLECTION_NAME: str = "anime_catalog"
 
 
 settings = Settings()

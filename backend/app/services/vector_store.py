@@ -96,14 +96,14 @@ def get_embeddings():
 
 
 def get_vector_store():
-    """Get or create the ChromaDB vector store.
+    """Get or create the vector store.
 
-    The store is persisted to disk at ``CHROMA_PERSIST_DIR`` so it
-    survives server restarts.  The collection name is
-    ``CHROMA_COLLECTION_NAME`` (default: "anime_catalog").
+    Automatically selects the backend based on DATABASE_URL:
+    - PostgreSQL (production/Neon) → PGVector (langchain-postgres)
+    - SQLite (local dev) → ChromaDB (langchain-chroma)
 
     Returns:
-        A LangChain ``Chroma`` vector store instance.
+        A LangChain vector store instance.
 
     Raises:
         RuntimeError: If OPENAI_API_KEY is not configured.
@@ -113,25 +113,45 @@ def get_vector_store():
     if _vector_store is not None:
         return _vector_store
 
-    from langchain_chroma import Chroma
-
     embeddings = get_embeddings()
+    db_url = settings.DATABASE_URL
 
-    # Ensure the persist directory exists
-    persist_dir = Path(settings.CHROMA_PERSIST_DIR)
-    persist_dir.mkdir(parents=True, exist_ok=True)
+    if db_url.startswith("postgresql") or db_url.startswith("postgres"):
+        # ── Production: pgvector on Neon ──────────────────
+        from langchain_postgres.vectorstores import PGVector
 
-    _vector_store = Chroma(
-        collection_name=settings.CHROMA_COLLECTION_NAME,
-        embedding_function=embeddings,
-        persist_directory=str(persist_dir),
-    )
+        # langchain-postgres requires the psycopg (v3) driver prefix
+        conn = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        conn = conn.replace("postgres://", "postgresql+psycopg://", 1)
 
-    logger.info(
-        "Initialised ChromaDB vector store (dir=%s, collection=%s)",
-        persist_dir,
-        settings.CHROMA_COLLECTION_NAME,
-    )
+        _vector_store = PGVector(
+            embeddings=embeddings,
+            collection_name=settings.VECTOR_COLLECTION_NAME,
+            connection=conn,
+            use_jsonb=True,
+            pre_delete_collection=False,
+        )
+        logger.info(
+            "Initialised PGVector store (collection=%s)",
+            settings.VECTOR_COLLECTION_NAME,
+        )
+    else:
+        # ── Development: ChromaDB on disk ─────────────────
+        from langchain_chroma import Chroma
+
+        persist_dir = Path(settings.CHROMA_PERSIST_DIR)
+        persist_dir.mkdir(parents=True, exist_ok=True)
+
+        _vector_store = Chroma(
+            collection_name=settings.CHROMA_COLLECTION_NAME,
+            embedding_function=embeddings,
+            persist_directory=str(persist_dir),
+        )
+        logger.info(
+            "Initialised ChromaDB vector store (dir=%s, collection=%s)",
+            persist_dir,
+            settings.CHROMA_COLLECTION_NAME,
+        )
     return _vector_store
 
 
@@ -248,7 +268,7 @@ def search_anime(
         k: Number of results to return (default 20).
         filter_dict: Optional ChromaDB metadata filter.
             Example: {"anime_type": "TV", "year_gte": 2020}
-            See ``_build_chroma_filter()`` for supported filters.
+            See ``_build_filter()`` for supported filters.
         score_threshold: Optional minimum similarity score (0–1).
             Results below this threshold are excluded.
 
@@ -268,7 +288,7 @@ def search_anime(
     store = get_vector_store()
 
     # Build ChromaDB where filter if provided
-    where_filter = _build_chroma_filter(filter_dict) if filter_dict else None
+    where_filter = _build_filter(filter_dict) if filter_dict else None
 
     # search with scores
     results = store.similarity_search_with_relevance_scores(
@@ -304,25 +324,37 @@ def search_anime(
 
 
 def get_store_stats() -> dict:
-    """Get statistics about the vector store.
+    """Get statistics about the vector store."""
+    db_url = settings.DATABASE_URL
 
-    Returns:
-        Dict with:
-        - ``total_documents``: int — number of anime in the store
-        - ``collection_name``: str
-        - ``persist_directory``: str
-    """
-    store = get_vector_store()
+    if db_url.startswith("postgresql") or db_url.startswith("postgres"):
+        from sqlalchemy import create_engine, text
 
-    # Access the underlying ChromaDB collection for count
-    collection = store._collection
-    count = collection.count()
-
-    return {
-        "total_documents": count,
-        "collection_name": settings.CHROMA_COLLECTION_NAME,
-        "persist_directory": settings.CHROMA_PERSIST_DIR,
-    }
+        conn = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+        conn = conn.replace("postgres://", "postgresql+psycopg://", 1)
+        engine = create_engine(conn)
+        with engine.connect() as c:
+            result = c.execute(
+                text(
+                    "SELECT COUNT(*) FROM langchain_pg_embedding e "
+                    "JOIN langchain_pg_collection col ON e.collection_id = col.uuid "
+                    "WHERE col.name = :name"
+                ),
+                {"name": settings.VECTOR_COLLECTION_NAME},
+            )
+            count = result.scalar() or 0
+        return {
+            "total_documents": count,
+            "collection_name": settings.VECTOR_COLLECTION_NAME,
+        }
+    else:
+        store = get_vector_store()
+        collection = store._collection
+        return {
+            "total_documents": collection.count(),
+            "collection_name": settings.CHROMA_COLLECTION_NAME,
+            "persist_directory": settings.CHROMA_PERSIST_DIR,
+        }
 
 
 def delete_all_documents() -> int:
@@ -333,18 +365,25 @@ def delete_all_documents() -> int:
     Returns:
         Number of documents that were deleted.
     """
-    store = get_vector_store()
-    collection = store._collection
-    count = collection.count()
+    db_url = settings.DATABASE_URL
 
-    if count > 0:
-        # Get all IDs and delete them
-        all_data = collection.get()
-        if all_data["ids"]:
-            collection.delete(ids=all_data["ids"])
-
-    logger.info("Deleted %d documents from vector store", count)
-    return count
+    if db_url.startswith("postgresql") or db_url.startswith("postgres"):
+        store = get_vector_store()
+        count = get_store_stats()["total_documents"]
+        store.delete_collection()
+        store.create_collection()
+        logger.info("Deleted %d documents from PGVector store", count)
+        return count
+    else:
+        store = get_vector_store()
+        collection = store._collection
+        count = collection.count()
+        if count > 0:
+            all_data = collection.get()
+            if all_data["ids"]:
+                collection.delete(ids=all_data["ids"])
+        logger.info("Deleted %d documents from ChromaDB store", count)
+        return count
 
 
 # ═════════════════════════════════════════════════════════
@@ -395,7 +434,7 @@ def _build_metadata(entry: dict) -> dict:
     return metadata
 
 
-def _build_chroma_filter(filter_dict: dict) -> dict | None:
+def _build_filter(filter_dict: dict) -> dict | None:
     """Build a ChromaDB ``where`` filter from a user-friendly dict.
 
     Supports simple equality and range filters:
