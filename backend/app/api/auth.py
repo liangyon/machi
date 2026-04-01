@@ -26,12 +26,15 @@ COOKIE_MAX_AGE = settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60  # seconds
 def _set_session_cookie(response: Response, user_id: str) -> None:
     """Create a JWT and set it as an HttpOnly cookie on *response*."""
     token = create_access_token(user_id)
+    # SameSite=None is required for cross-origin cookies (frontend on a
+    # different domain than the backend). SameSite=None requires Secure=True.
+    is_production = not settings.DEBUG
     response.set_cookie(
         key=COOKIE_NAME,
         value=token,
         httponly=True,
-        secure=not settings.DEBUG,  # Secure in production
-        samesite="lax",
+        secure=is_production,
+        samesite="none" if is_production else "lax",
         max_age=COOKIE_MAX_AGE,
         path="/",
     )

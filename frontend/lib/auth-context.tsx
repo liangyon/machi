@@ -63,7 +63,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const loginEmail = useCallback(async (email: string, password: string) => {
-    const u = await loginWithEmail(email, password);
+    await loginWithEmail(email, password);
+    // Verify the session cookie was actually set by re-fetching from the server.
+    // If cross-origin cookies are blocked, this will return null and the caller
+    // will stay on the login page rather than redirecting to a broken dashboard.
+    const u = await fetchMe();
+    if (!u) throw new Error("Login succeeded but session could not be established. Check browser cookie settings.");
     setUser(u);
   }, []);
 
@@ -71,7 +76,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     async (email: string, password: string, name?: string) => {
       await registerApi(email, password, name);
       // Auto-login after registration
-      const u = await loginWithEmail(email, password);
+      await loginWithEmail(email, password);
+      const u = await fetchMe();
+      if (!u) throw new Error("Registration succeeded but session could not be established. Check browser cookie settings.");
       setUser(u);
     },
     []
