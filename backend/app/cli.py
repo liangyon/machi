@@ -267,9 +267,11 @@ def _embed_unembedded_entries():
     from app.models.anime import AnimeCatalogEntry
     from app.services.vector_store import add_anime_to_store
 
+    # Fetch all unembedded entries then immediately close the session.
+    # This avoids holding a long-lived DB connection open while OpenAI
+    # API calls are in-flight (Neon auto-suspends idle connections).
     db = SessionLocal()
     try:
-        # Find un-embedded entries
         entries = (
             db.execute(
                 select(AnimeCatalogEntry).where(
@@ -285,44 +287,60 @@ def _embed_unembedded_entries():
             print("✅ All catalog entries are already embedded!")
             return
 
-        print(f"🧠 Embedding {len(entries)} anime into vector store...")
-
-        # Process in chunks and commit progress after each chunk so that
-        # a crash mid-run doesn't lose all progress.
-        chunk_size = 500
-        total_added = 0
-        for i in range(0, len(entries), chunk_size):
-            chunk = entries[i : i + chunk_size]
-
-            entry_dicts = [
-                {
-                    "mal_id": e.mal_id,
-                    "title": e.title,
-                    "image_url": e.image_url,
-                    "embedding_text": e.embedding_text,
-                    "genres": e.genres,
-                    "themes": e.themes,
-                    "anime_type": e.anime_type,
-                    "year": e.year,
-                    "mal_score": e.mal_score,
-                    "mal_members": e.mal_members,
-                }
-                for e in chunk
-            ]
-
-            added = add_anime_to_store(entry_dicts)
-            total_added += added
-
-            # Commit this chunk's progress immediately
-            for entry in chunk:
-                entry.is_embedded = True
-            db.commit()
-            print(f"   Progress: {min(i + chunk_size, len(entries))}/{len(entries)} embedded")
-
-        print(f"   ✅ Embedded {total_added} anime into vector store")
-
+        # Convert to plain dicts so ORM objects don't need a live session
+        entry_dicts = [
+            {
+                "mal_id": e.mal_id,
+                "title": e.title,
+                "image_url": e.image_url,
+                "embedding_text": e.embedding_text,
+                "genres": e.genres,
+                "themes": e.themes,
+                "anime_type": e.anime_type,
+                "year": e.year,
+                "mal_score": e.mal_score,
+                "mal_members": e.mal_members,
+            }
+            for e in entries
+        ]
+        mal_ids = [e.mal_id for e in entries]
     finally:
         db.close()
+
+    print(f"🧠 Embedding {len(entry_dicts)} anime into vector store...")
+
+    # Process in chunks. Open a fresh DB session per chunk to commit
+    # progress — avoids stale connections after long OpenAI API calls.
+    chunk_size = 500
+    total_added = 0
+    for i in range(0, len(entry_dicts), chunk_size):
+        chunk_dicts = entry_dicts[i : i + chunk_size]
+        chunk_ids = mal_ids[i : i + chunk_size]
+
+        added = add_anime_to_store(chunk_dicts)
+        total_added += added
+
+        # Fresh session just for the commit
+        db = SessionLocal()
+        try:
+            chunk_entries = (
+                db.execute(
+                    select(AnimeCatalogEntry).where(
+                        AnimeCatalogEntry.mal_id.in_(chunk_ids)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            for entry in chunk_entries:
+                entry.is_embedded = True
+            db.commit()
+        finally:
+            db.close()
+
+        print(f"   Progress: {min(i + chunk_size, len(entry_dicts))}/{len(entry_dicts)} embedded")
+
+    print(f"   ✅ Embedded {total_added} anime into vector store")
 
 
 # ═════════════════════════════════════════════════════════
@@ -379,7 +397,8 @@ def cmd_stats():
         print(f"\n🧠 Vector Store Statistics")
         print(f"   Documents:   {vs_stats['total_documents']}")
         print(f"   Collection:  {vs_stats['collection_name']}")
-        print(f"   Directory:   {vs_stats['persist_directory']}")
+        if "persist_directory" in vs_stats:
+            print(f"   Directory:   {vs_stats['persist_directory']}")
     except RuntimeError as e:
         print(f"\n⚠️  Vector store not available: {e}")
 

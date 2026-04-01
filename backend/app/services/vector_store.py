@@ -169,7 +169,7 @@ def reset_vector_store() -> None:
 
 def add_anime_to_store(
     entries: list[dict],
-    batch_size: int = 100,
+    batch_size: int = 500,
 ) -> int:
     """Embed and store anime documents in the vector store.
 
@@ -226,19 +226,29 @@ def add_anime_to_store(
         if not texts:
             continue
 
-        # Embed with retry on OpenAI rate limit errors
+        # Embed with retry on OpenAI rate limit errors.
+        # Parse the suggested wait from the error message when available;
+        # otherwise back off exponentially starting at 5s.
+        import re
         import time
-        for attempt in range(5):
+        for attempt in range(8):
             try:
                 store.add_texts(texts=texts, metadatas=metadatas, ids=ids)
                 break
             except Exception as e:
-                if "rate_limit" in str(e).lower() or "429" in str(e):
-                    wait = 60 * (attempt + 1)
-                    logger.warning("Rate limited, waiting %ds (attempt %d/5)", wait, attempt + 1)
+                err = str(e)
+                if "rate_limit" in err.lower() or "429" in err:
+                    # Try to extract "try again in Xs" from the error message
+                    match = re.search(r"try again in (\d+(?:\.\d+)?)s", err)
+                    wait = float(match.group(1)) + 1 if match else min(5 * 2 ** attempt, 60)
+                    logger.warning("Rate limited, waiting %.1fs (attempt %d/8)", wait, attempt + 1)
                     time.sleep(wait)
                 else:
                     raise
+        # Small pause between batches to stay under TPM limit.
+        # 500 anime × ~200 tokens = ~100k tokens/batch.
+        # At 1M TPM limit, ~10 batches/min max → 6s between batches.
+        time.sleep(6)
 
         total_added += len(texts)
         logger.info(
